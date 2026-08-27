@@ -11,7 +11,11 @@ import type { BackendDecoder, ImageFrame, TransferBackend } from '../types';
  * its "6-bit cimbar" mode), mode B is the 4-color/6-bit-per-tile mode —
  * the balanced default, not the densest (8-color/7-bit "Mode 8C") option.
  * Other modes ("4C", "Bu", "Bm") trade throughput for reliability
- * differently; exposing that choice is future work, not this pass.
+ * differently — `CimbarEncodeOptions.mode` now exposes that choice (e.g.
+ * `67`/"Bm", documented upstream as built specifically for broader
+ * camera compatibility at ~30% less throughput than B); `CimbarDecoder`
+ * separately cycles through candidate modes per frame rather than
+ * assuming the sender used this default (see its `CANDIDATE_MODES`).
  */
 const DEFAULT_MODE = 68;
 
@@ -28,10 +32,30 @@ const DEFAULT_FRAME_SIZE = 1024;
 
 /** `type=4` in libcimbar's own reference glue — a raw 4-byte-per-pixel (RGBA) buffer, matching `ImageFrame.data` / canvas `ImageData`. */
 const PIXEL_FORMAT_RGBA = 4;
+/**
+ * Native YUV pixel-format codes for `_cimbard_scan_extract_decode`'s
+ * `pixelFormat` argument, per libcimbar's own reference glue
+ * (`cimbar_recv_js.cpp`'s `get_rgb()`) — `12` for 4:2:0 semi-planar NV12,
+ * `420` for 4:2:0 planar I420. Passing a `Camera.grabNativeFrame`-captured
+ * `VideoFrame`'s pixels straight through in whichever of these two formats
+ * it natively arrives in (see `ImageFrame.format`) skips `PIXEL_FORMAT_RGBA`'s
+ * canvas-2D `drawImage`/`getImageData` conversion entirely.
+ */
+const PIXEL_FORMAT_NV12 = 12;
+const PIXEL_FORMAT_I420 = 420;
 
 export interface CimbarEncodeOptions {
   /** Encode/render resolution (square). Defaults to `DEFAULT_FRAME_SIZE`. */
   frameSize?: number;
+  /**
+   * libcimbar encode mode (`_cimbare_configure`'s first argument). Defaults
+   * to `DEFAULT_MODE` (`68`, "mode B") — unchanged from before this field
+   * existed. Set to `67` ("Bm") to trade ~30% throughput for the broader
+   * camera compatibility it's documented upstream as built for; the
+   * receiving `CimbarDecoder` doesn't need to be told which mode was used —
+   * it cycles through candidates per frame until one decodes.
+   */
+  mode?: number;
 }
 
 /**
@@ -95,7 +119,14 @@ function readCanvasPixels(
   return { data: flipped, width, height };
 }
 
-/** One-time encoder setup: bind an offscreen canvas and the default mode. Idempotent per module instance. */
+/**
+ * One-time encoder setup: bind an offscreen canvas. Idempotent per module
+ * instance. Deliberately doesn't configure a mode here (that used to be a
+ * single `_cimbare_configure(DEFAULT_MODE, -1)` call baked in at setup
+ * time) — `encode()` calls `_cimbare_configure` itself on every invocation,
+ * since the requested `mode` can now differ per call (`CimbarEncodeOptions.mode`)
+ * even though this setup only ever runs once.
+ */
 let encoderReady:
   | Promise<{
       module: CimbarModule;
@@ -110,11 +141,30 @@ function initEncoder(frameSize: number) {
     const canvas = new OffscreenCanvas(frameSize, frameSize);
     module.canvas = canvas;
     module._cimbare_init_window(frameSize, frameSize);
-    module._cimbare_configure(DEFAULT_MODE, -1);
     const gl = getWebGlContext(canvas);
+    logGlRenderer(gl);
     return { module, canvas, gl };
   })();
   return encoderReady;
+}
+
+/**
+ * Surfaces which renderer WebGL actually bound to, so a software-rendering
+ * fallback (SwiftShader, llvmpipe, ...) is visible instead of silent — this
+ * has previously caused severe per-frame slowdowns via `gl.readPixels`
+ * stalls (see README's Cimbar section on the swiftshader performance
+ * caveat). Not every browser exposes `WEBGL_debug_renderer_info` (some
+ * gate it behind a permission/flag); when it's unavailable, this is simply
+ * a no-op rather than a hard failure.
+ */
+function logGlRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): void {
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  if (dbg) {
+    console.info(
+      '[screenferry] cimbar GPU renderer:',
+      gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL),
+    );
+  }
 }
 
 /**
@@ -150,7 +200,9 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
 
   async *encode(bytes: Uint8Array, opts?: CimbarEncodeOptions): AsyncIterable<ImageFrame> {
     const frameSize = opts?.frameSize ?? DEFAULT_FRAME_SIZE;
+    const mode = opts?.mode ?? DEFAULT_MODE;
     const { module, canvas, gl } = await initEncoder(frameSize);
+    module._cimbare_configure(mode, -1);
 
     // Cimbar's own encoder wants a filename (it has no envelope layer of
     // its own) — irrelevant here since `buildEnvelope` already carries the
@@ -204,6 +256,18 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
  * since (unlike the reference) it isn't split across a worker boundary.
  */
 class CimbarDecoder implements BackendDecoder<ImageFrame> {
+  /**
+   * Candidate decode modes to cycle through per frame until one works — `68`
+   * (B), `67` (Bm — added in libcimbar v0.6.3, present in this project's
+   * vendored v0.6.8 build; documented upstream as built specifically for
+   * broader camera compatibility at ~30% less throughput than B), `66`
+   * (Bu), `4` (4C). Mirrors the reference `recv.js`'s `on_frame`:
+   * `const modeVals = [66, 68, 67, 4]; let mode = _mode || modeVals[_counter
+   * % modeVals.length];` — same pool, reordered here so the previous
+   * hardcoded default (`68`) is still tried first.
+   */
+  private static readonly CANDIDATE_MODES = [68, 67, 66, 4];
+
   private module: CimbarModule | undefined;
   private imgBuffer: GrowableWasmBuffer | undefined;
   private chunkBuffer: GrowableWasmBuffer | undefined;
@@ -212,6 +276,15 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
   private readonly pending: ImageFrame[] = [];
   private result: Uint8Array | undefined;
   private loading = false;
+
+  /** Index into `CANDIDATE_MODES`, advanced once per failed extraction attempt while unlocked. */
+  private modeAttempt = 0;
+  /** The mode that first produced `extractedLen >= 0` — once set, every later frame uses it directly, skipping the cycle. */
+  private lockedMode: number | undefined;
+
+  /** Running per-second `extractedLen` outcome counts, for `recordExtractStat`'s throttled `console.debug`. */
+  private readonly extractStats = new Map<number, number>();
+  private statsWindowStart = 0;
 
   get isComplete(): boolean {
     return this.result !== undefined;
@@ -232,10 +305,13 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
       if (!this.loading) {
         this.loading = true;
         void loadCimbarModule().then((module) => {
-          // Must match the encoder's _cimbare_configure mode, or every
-          // frame fails symbol extraction (len === -3) even with genuine,
-          // correctly-rendered Cimbar image data — confirmed by testing.
-          module._cimbard_configure_decode(DEFAULT_MODE);
+          // The decode mode must match the encoder's `_cimbare_configure`
+          // mode, or every frame fails symbol extraction (len === -3) even
+          // with genuine, correctly-rendered Cimbar image data — confirmed
+          // by testing. Which mode that is isn't known yet here; the actual
+          // `_cimbard_configure_decode` calls happen per frame in
+          // `processFrame`, cycling through `CANDIDATE_MODES` until one
+          // works (see its doc comment).
           this.module = module;
           this.imgBuffer = new GrowableWasmBuffer(module);
           this.chunkBuffer = new GrowableWasmBuffer(module);
@@ -264,11 +340,31 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
     const chunkBuffer = this.chunkBuffer;
     if (!module || !imgBuffer || !chunkBuffer) return;
 
+    // While the mode is still unknown, cycle through candidates one frame
+    // at a time (mirrors the reference `recv.js`'s `on_frame`, which reuses
+    // the same modulo-cycling trick) — a wrong guess here isn't a dead end
+    // like it was with a single hardcoded mode, just one skipped frame.
+    const candidateMode =
+      this.lockedMode ??
+      CimbarDecoder.CANDIDATE_MODES[this.modeAttempt % CimbarDecoder.CANDIDATE_MODES.length];
+    if (this.lockedMode === undefined) module._cimbard_configure_decode(candidateMode);
+
     const imgView = imgBuffer.ensure(frame.data.length);
     imgView.set(frame.data);
 
     const chunkCapacity = module._cimbard_get_bufsize();
     const chunkView = chunkBuffer.ensure(chunkCapacity);
+
+    // `Camera.grabNativeFrame`'s WebCodecs path tags a frame with its
+    // native NV12/I420 layout instead of always converting to RGBA first
+    // (Fix 4) — pass the matching pixel-format code straight through
+    // rather than assuming RGBA.
+    const pixelFormat =
+      frame.format === 'nv12'
+        ? PIXEL_FORMAT_NV12
+        : frame.format === 'i420'
+          ? PIXEL_FORMAT_I420
+          : PIXEL_FORMAT_RGBA;
 
     // Stage 1: does this frame contain a readable Cimbar symbol, and if
     // so, extract its raw fountain-coded chunk (not file content yet).
@@ -276,17 +372,35 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
       imgBuffer.byteOffset,
       frame.width,
       frame.height,
-      PIXEL_FORMAT_RGBA,
+      pixelFormat,
       chunkBuffer.byteOffset,
       chunkView.length,
     );
 
-    if (extractedLen === 0) return; // No symbol / nothing new this frame.
+    this.recordExtractStat(extractedLen);
+
+    // `extractedLen >= 0` means this frame was readable under
+    // `candidateMode` (0 = found/deskewed but no cells; >0 = got a chunk)
+    // -- lock onto it so every later frame skips the cycling entirely.
+    if (extractedLen >= 0 && this.lockedMode === undefined) {
+      this.lockedMode = candidateMode;
+    }
+
+    if (extractedLen === 0) {
+      // Symbol found and deskewed, but zero cells decoded -- a color/
+      // threshold problem, not a "can't find it" problem. Previously silent
+      // (identical to the < 0 case from the caller's perspective); logging
+      // it is what makes the two failure modes distinguishable at all.
+      this.reportError();
+      return;
+    }
     if (extractedLen < 0) {
       // Extraction failed for this frame — expected in live use (motion
-      // blur, partial symbol in view, autofocus hunting); keep listening,
-      // same tolerance `Scanner` already applies to a QR miss.
+      // blur, partial symbol in view, autofocus hunting), but also what a
+      // wrong candidate mode looks like; advance to the next candidate for
+      // the next frame either way.
       this.reportError();
+      if (this.lockedMode === undefined) this.modeAttempt++;
       return;
     }
 
@@ -340,5 +454,32 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
         new TextDecoder().decode(errView.subarray(0, errLen)),
       );
     }
+  }
+
+  /**
+   * Tracks a running, once-per-second `console.debug` summary of
+   * `_cimbard_scan_extract_decode`'s return values (bucketed: exact negative
+   * codes, `0`, and `>0` lumped together) — visible confirmation, without
+   * spamming the console every frame, of what fraction of frames are
+   * failing extraction (`< 0`) vs. found-but-empty (`0`) vs. genuinely
+   * decoding (`> 0`), so Fix 1's premise ("both failure modes currently
+   * look identical") can actually be checked against a live scan session.
+   */
+  private recordExtractStat(extractedLen: number): void {
+    const key = extractedLen > 0 ? Infinity : extractedLen;
+    this.extractStats.set(key, (this.extractStats.get(key) ?? 0) + 1);
+
+    const now = Date.now();
+    if (this.statsWindowStart === 0) this.statsWindowStart = now;
+    if (now - this.statsWindowStart < 1000) return;
+
+    const summary = [...this.extractStats.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([len, count]) => `${len === Infinity ? '>0' : len}=${count}`)
+      .join(', ');
+    console.debug(`[screenferry] cimbar extractedLen outcomes (last ~1s): ${summary}`);
+
+    this.extractStats.clear();
+    this.statsWindowStart = now;
   }
 }

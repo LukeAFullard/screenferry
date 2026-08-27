@@ -160,7 +160,11 @@ frames for denser color-based ones.
   dramatically faster, but that's genuinely unconfirmed — this needs a
   real-device smoke test to know for sure. `examples/app.html` now exposes
   `frameSize` as a live control specifically so you can find a resolution
-  that performs acceptably on your own device.
+  that performs acceptably on your own device. The encoder also logs which
+  renderer WebGL actually bound to (`console.info('[screenferry] cimbar GPU
+  renderer:', ...)`, via `WEBGL_debug_renderer_info`) — if that logs
+  `SwiftShader`/`llvmpipe`/`Software` on a device that should have a real
+  GPU, treat frame timing as suspect independently of everything else here.
 - **Real-camera scanning needs more pixels per cell than QR does.** Cimbar's
   grid (112×112 cells at every `frameSize` — see below) is far denser than
   QR's modules, so it's much more sensitive to things that barely affect QR:
@@ -172,6 +176,30 @@ frames for denser color-based ones.
     the browser can fall back lower), and both expose a `resolution` getter
     (also mirrored on `ReceiverSession`/`NegotiatingReceiverSession`) —
     `examples/app.html` displays it live during scanning.
+  - Exposure/focus hunting and motion blur. `Camera.start()` also requests
+    `aspectRatio` (matched to portrait/landscape), `exposureMode`/
+    `focusMode: 'continuous'`, and `frameRate: { ideal: 15 }` — the same
+    constraints `sz3/libcimbar`'s reference `recv.js` (`init_video`) uses,
+    since Cimbar's fixed-threshold anchor detector is far less tolerant of
+    a hunting exposure/focus loop than QR is. Browsers that don't recognize
+    `exposureMode`/`focusMode` (not yet a standard `MediaTrackConstraints`
+    field) just ignore them.
+  - Which decode mode the sender actually used. `CimbarDecoder` no longer
+    assumes mode `68` ("B") — it cycles through `[68, 67, 66, 4]` per
+    frame (`_cimbard_configure_decode` before each attempt) and locks onto
+    whichever one first decodes, mirroring the reference `recv.js`'s
+    `on_frame`. `CimbarEncodeOptions.mode` exposes the same choice on the
+    sending side — mode `67` ("Bm") is documented upstream as built
+    specifically for broader camera compatibility, at ~30% less
+    throughput than the default.
+  - What's actually failing, frame to frame. Previously, a frame whose
+    symbol was found but decoded zero cells (`extractedLen === 0` — a
+    color/threshold problem) was silently indistinguishable from a frame
+    where symbol extraction failed outright (`extractedLen < 0` — can't
+    find/deskew it at all). Both now call `reportError()`, and
+    `CimbarDecoder` logs a throttled (~once/second) `console.debug` count
+    of extraction outcomes, so which failure mode is actually happening
+    during a live scan is visible instead of guessed at.
   - The on-screen size of the *displayed* code — shrink it in CSS/layout
     and every cell shrinks with it. `examples/app.html` previously forced
     the sender canvas into a small (~260-480px) box regardless of its true
@@ -192,9 +220,27 @@ frames for denser color-based ones.
     could help, not lowering it.
 
   These were real, identified bugs/misconceptions in this project's own
-  test harness and docs, not hypotheticals — but real-device confirmation
-  that a real camera now actually scans real Cimbar frames end to end is
-  still open (see the performance caveat below).
+  test harness and docs, not hypotheticals — confirmed on real camera
+  hardware (not just theorized), which is what motivated the mode-cycling,
+  camera-constraint, and diagnostic-logging fixes above, plus the two
+  below.
+- **Frame capture skips the canvas/RGBA round trip when possible.**
+  `Camera.grabNativeFrame()` (used by `Scanner`'s `rawFrames` mode) reads
+  the camera's *native* pixel format — NV12 or I420 — directly off a
+  `MediaStreamTrackProcessor`-backed `VideoFrame`, via WebCodecs, instead
+  of always compositing through `<canvas>` `drawImage`/`getImageData` into
+  RGBA first (a real color-processing hop for a format that only needs 2
+  bits of color per cell). Falls back to the canvas/RGBA path
+  automatically on a browser without `MediaStreamTrackProcessor`/
+  `VideoFrame` support, or if the captured format isn't NV12/I420.
+- **Test the pinned path before the negotiated one.** `examples/app.html`'s
+  "pin cimbar" checkbox bypasses `preferredBackend`/
+  `NegotiatingReceiverSession` entirely in favor of
+  `encodeToFrames(file, { backend: cimbarBackend })` +
+  `new ReceiverSession(callbacks, cimbarBackend).start(video, { rawFrames: true })`
+  — removing `NegotiatingReceiverSession.switchToRawFrames()`'s camera
+  stop/restart handoff as a variable. If Cimbar works pinned but not
+  negotiated, the bug is in that handoff, not the codec.
 - **More sensitive to camera/screen color accuracy** than QR's
   black-and-white frames — screen color calibration, camera white balance,
   and ambient lighting all matter more here.

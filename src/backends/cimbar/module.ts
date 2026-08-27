@@ -56,6 +56,18 @@ export interface CimbarModule {
     imgPtr: number,
     width: number,
     height: number,
+    /**
+     * Layout of the pixels at `imgPtr`, per libcimbar's reference glue
+     * (`cimbar_recv_js.cpp`'s `get_rgb()`): `4` = interleaved RGBA (the
+     * default this project used exclusively before Fix 4 — one byte per
+     * channel, four bytes per pixel, matching canvas `ImageData`/
+     * `ImageFrame.data` when `format` is unset/`'rgba'`); `12` = 4:2:0
+     * semi-planar NV12; `420` = 4:2:0 planar I420. `cimbarBackend`'s
+     * `PIXEL_FORMAT_RGBA`/`PIXEL_FORMAT_NV12`/`PIXEL_FORMAT_I420` mirror
+     * these three; see `Camera.grabNativeFrame` for where NV12/I420 frames
+     * actually come from (a `VideoFrame`'s native capture format, captured
+     * without a canvas/RGBA conversion step).
+     */
     pixelFormat: number,
     outPtr: number,
     outLen: number,
