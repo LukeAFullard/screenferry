@@ -62,6 +62,10 @@ export class TransferDecoder {
     return this.fountainDecoder.isComplete();
   }
 
+  get progress(): number {
+    return this.fountainDecoder.progress;
+  }
+
   async getResult(): Promise<DecodedFile> {
     return unwrapEnvelope(this.fountainDecoder.getResult());
   }

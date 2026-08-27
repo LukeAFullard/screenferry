@@ -1,7 +1,6 @@
 {
   "name": "screenferry",
-  "version": "0.0.0-development",
-  "private": true,
+  "version": "1.0.0",
   "description": "Framework-agnostic zero-backend TypeScript library for transferring files via animated 2D barcodes",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -15,7 +14,25 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LukeAFullard/screenferry.git"
+  },
+  "homepage": "https://github.com/LukeAFullard/screenferry#readme",
+  "bugs": {
+    "url": "https://github.com/LukeAFullard/screenferry/issues"
+  },
+  "keywords": [
+    "qr-code",
+    "file-transfer",
+    "fountain-code",
+    "air-gap",
+    "offline",
+    "camera",
+    "luby-transform"
   ],
   "scripts": {
     "build": "vite build",
@@ -23,6 +40,7 @@
     "lint": "eslint .",
     "format": "prettier --check .",
     "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "qr:capacity": "node scripts/qr-capacity.mjs"
   },
   "license": "MIT",

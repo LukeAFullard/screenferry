@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>screenferry — loopback demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 760px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      .canvases {
+        display: flex;
+        gap: 1.5rem;
+      }
+      canvas {
+        border: 1px solid #ccc;
+        image-rendering: pixelated;
+        width: 260px;
+        height: 260px;
+      }
+      #status {
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
+      progress {
+        width: 320px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>screenferry — loopback demo</h1>
+    <p>
+      Stage 6's first full end-to-end milestone: the sender (<code>DisplayDriver</code>) renders to
+      the left canvas; the right canvas mirrors those same pixels and is captured as a fake camera
+      stream, so the real public
+      <code>ReceiverSession</code> API — camera, worker, decode, checksum — runs against it without
+      any real hardware.
+    </p>
+
+    <div class="canvases">
+      <div>
+        <h2>Sender</h2>
+        <canvas id="sender-canvas"></canvas>
+      </div>
+      <div>
+        <h2>"Camera" (mirrors sender)</h2>
+        <canvas id="camera-canvas" width="400" height="400"></canvas>
+      </div>
+    </div>
+
+    <p>
+      <input type="file" id="file-input" />
+    </p>
+    <p>
+      <button id="start">Start loopback</button>
+    </p>
+    <progress id="progress" value="0" max="1"></progress>
+    <pre id="status">idle</pre>
+    <p><a id="download-link" style="display: none">Download reconstructed file</a></p>
+
+    <script type="module">
+      import { encodeToFrames, DisplayDriver, ReceiverSession } from '../dist/index.js';
+
+      const senderCanvas = document.getElementById('sender-canvas');
+      const cameraCanvas = document.getElementById('camera-canvas');
+      const cameraCtx = cameraCanvas.getContext('2d');
+      const status = document.getElementById('status');
+      const progress = document.getElementById('progress');
+      const fileInput = document.getElementById('file-input');
+      const downloadLink = document.getElementById('download-link');
+
+      function defaultSampleFile() {
+        const text = 'screenferry loopback demo — sample payload\n'.repeat(50);
+        return new File([text], 'loopback-sample.txt', { type: 'text/plain' });
+      }
+
+      let mirrorHandle;
+      function startMirroring() {
+        function mirror() {
+          if (senderCanvas.width && senderCanvas.height) {
+            cameraCanvas.width = senderCanvas.width;
+            cameraCanvas.height = senderCanvas.height;
+            cameraCtx.drawImage(senderCanvas, 0, 0);
+          }
+          mirrorHandle = requestAnimationFrame(mirror);
+        }
+        mirror();
+      }
+      function stopMirroring() {
+        if (mirrorHandle) cancelAnimationFrame(mirrorHandle);
+      }
+
+      document.getElementById('start').addEventListener('click', async () => {
+        downloadLink.style.display = 'none';
+        progress.value = 0;
+
+        const file = fileInput.files?.[0] ?? defaultSampleFile();
+
+        // Fake camera: capture the mirror canvas as a MediaStream instead of
+        // prompting for real hardware. This is the only non-public-API bit
+        // here — everything downstream is the real Camera/Scanner/
+        // StreamDecoder pipeline.
+        const fakeStream = cameraCanvas.captureStream(15);
+        navigator.mediaDevices.getUserMedia = async () => fakeStream;
+        startMirroring();
+
+        const senderDriver = new DisplayDriver(encodeToFrames(file), senderCanvas, { fps: 10 });
+        senderDriver.start();
+
+        const session = new ReceiverSession({
+          onProgress: (p) => {
+            progress.value = p;
+            status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%`;
+          },
+          onComplete: (resultFile) => {
+            status.textContent = `done: "${resultFile.name}" (${resultFile.size} bytes)`;
+            senderDriver.stop();
+            stopMirroring();
+
+            const url = URL.createObjectURL(resultFile);
+            downloadLink.href = url;
+            downloadLink.download = resultFile.name;
+            downloadLink.textContent = `Download ${resultFile.name}`;
+            downloadLink.style.display = 'inline';
+          },
+          onError: (err) => {
+            status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
+            senderDriver.stop();
+            stopMirroring();
+          },
+        });
+
+        await session.start();
+        status.textContent = `sending + receiving "${file.name}"...`;
+      });
+    </script>
+  </body>
+</html>

@@ -38,7 +38,18 @@ export class FountainDecoder {
   }
 
   isComplete(): boolean {
-    return this.decoder.isComplete();
+    // bc-ur's URDecoder.isComplete() returns `undefined` (not `false`) before
+    // any result exists yet — coerce so this method keeps its boolean contract.
+    return Boolean(this.decoder.isComplete());
+  }
+
+  /**
+   * bc-ur's estimated completion ratio (0-1), as-is — fountain codes have no
+   * fixed "exactly N parts needed" number, so this is an estimate to
+   * surface to callers, not a guarantee.
+   */
+  get progress(): number {
+    return this.decoder.estimatedPercentComplete();
   }
 
   /** Envelope-encoded bytes — not yet decompressed or checksum-verified. */
