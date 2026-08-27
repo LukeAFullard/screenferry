@@ -11,12 +11,19 @@ import {
 import { qrLtBackend } from './backends/qr-lt';
 
 export interface EncodeOptions<F extends Frame = string> {
-  /** Fragment size (payload bytes per frame). */
+  /** Fragment size (payload bytes per frame). Ignored if `backendOptions` is set. */
   fragmentSize?: number;
   /** Target frame rate in FPS. */
   fps?: number;
   /** Which transfer backend to use. Defaults to `qrLtBackend` (QR + Luby Transform fountain codes). */
   backend?: TransferBackend<F>;
+  /**
+   * Backend-specific encode options (e.g. `CimbarEncodeOptions`), passed
+   * through as-is to `backend.encode()` instead of `{ maxFragmentLength:
+   * fragmentSize }`. Only meaningful together with `backend`/`preferredBackend`
+   * — `qrLtBackend` only understands `maxFragmentLength`.
+   */
+  backendOptions?: unknown;
 }
 
 /**
@@ -29,7 +36,7 @@ export interface EncodeOptions<F extends Frame = string> {
  * which backend is in use. See the README's "Backend negotiation" section.
  */
 export interface NegotiatedEncodeOptions {
-  /** Fragment size (payload bytes per frame), passed through to the resolved backend. */
+  /** Fragment size (payload bytes per frame), passed through to the resolved backend. Ignored if `backendOptions` is set. */
   fragmentSize?: number;
   fps?: number;
   preferredBackend: PreferredBackend;
@@ -40,6 +47,8 @@ export interface NegotiatedEncodeOptions {
    * this value. Default 10.
    */
   headerIntervalFrames?: number;
+  /** Backend-specific encode options (e.g. `CimbarEncodeOptions`) for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
+  backendOptions?: unknown;
 }
 
 const DEFAULT_HEADER_INTERVAL_FRAMES = 10;
@@ -99,7 +108,7 @@ export async function* encodeToFrames(
     const parts = await encodeFileToParts(
       bytes,
       { filename, mimeType },
-      { maxFragmentLength: opts.fragmentSize, backend },
+      { maxFragmentLength: opts.fragmentSize, backend, backendOptions: opts.backendOptions },
     );
     const intervalFrames = Math.max(1, opts.headerIntervalFrames ?? DEFAULT_HEADER_INTERVAL_FRAMES);
     yield* interleaveHeaderFrames(parts, backend.id, intervalFrames);
@@ -109,7 +118,11 @@ export async function* encodeToFrames(
   const parts = await encodeFileToParts(
     bytes,
     { filename, mimeType },
-    { maxFragmentLength: opts?.fragmentSize, backend: opts?.backend },
+    {
+      maxFragmentLength: opts?.fragmentSize,
+      backend: opts?.backend,
+      backendOptions: opts?.backendOptions,
+    },
   );
   yield* parts;
 }

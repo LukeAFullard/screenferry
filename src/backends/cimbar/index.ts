@@ -121,10 +121,18 @@ function initEncoder(frameSize: number) {
  * The v2 backend: libcimbar's WASM encoder/decoder (MPL-2.0, vendored —
  * see `THIRD_PARTY_LICENSES.md`), wrapped behind `TransferBackend`. Higher
  * throughput than `qrLtBackend`, at the cost of being far less
- * battle-tested here — this wrapper has been written against libcimbar's
- * reference JS glue but **not exercised against the real WASM binary in a
- * browser** (this repo's test harness has no WebGL/camera available). See
- * the README's Cimbar section before relying on it.
+ * battle-tested — `qrLtBackend` has this project's full test suite behind
+ * it; this doesn't.
+ *
+ * A full encode→decode round trip (byte-exact, through two independent
+ * WASM module instances, so not a shared-memory false positive) has been
+ * verified in a real browser (headless Chromium, software-rendered WebGL —
+ * see README's Cimbar section for the full detail and its real caveats:
+ * unconfirmed on real GPU/camera hardware, and very small payloads, under
+ * roughly a few hundred bytes, can fail — Cimbar pads them to fill a full
+ * fountain chunk, and if that padding is low-entropy the symbol extractor
+ * may not reliably find tile boundaries; this project's own envelope
+ * overhead plus a normal file easily clears that in practice).
  *
  * `Frame` for this backend is rendered pixel data (`ImageFrame`), not a
  * string — `DisplayDriver` and `Scanner` both need to be told to expect
@@ -184,10 +192,22 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
   },
 };
 
+/**
+ * Cimbar's decode is a two-stage pipeline, not one call — this isn't
+ * documented anywhere in prose; it only became clear from reading how the
+ * reference tarball's *two* JS files split the work: `recv-worker.js`
+ * (the per-frame, worker-side half) calls only `_cimbard_scan_extract_decode`,
+ * which looks self-contained until you notice its result is just handed off
+ * to `recv.js`'s main-thread-side `Sink.on_decode`, which is the half that
+ * actually calls `_cimbard_fountain_decode` and, on completion,
+ * `_cimbard_decompress_read`. This wrapper does all of it in one place
+ * since (unlike the reference) it isn't split across a worker boundary.
+ */
 class CimbarDecoder implements BackendDecoder<ImageFrame> {
   private module: CimbarModule | undefined;
   private imgBuffer: GrowableWasmBuffer | undefined;
-  private fountainBuffer: GrowableWasmBuffer | undefined;
+  private chunkBuffer: GrowableWasmBuffer | undefined;
+  private decompressBuffer: GrowableWasmBuffer | undefined;
   private errorBuffer: GrowableWasmBuffer | undefined;
   private readonly pending: ImageFrame[] = [];
   private result: Uint8Array | undefined;
@@ -212,9 +232,14 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
       if (!this.loading) {
         this.loading = true;
         void loadCimbarModule().then((module) => {
+          // Must match the encoder's _cimbare_configure mode, or every
+          // frame fails symbol extraction (len === -3) even with genuine,
+          // correctly-rendered Cimbar image data — confirmed by testing.
+          module._cimbard_configure_decode(DEFAULT_MODE);
           this.module = module;
           this.imgBuffer = new GrowableWasmBuffer(module);
-          this.fountainBuffer = new GrowableWasmBuffer(module);
+          this.chunkBuffer = new GrowableWasmBuffer(module);
+          this.decompressBuffer = new GrowableWasmBuffer(module);
           this.errorBuffer = new GrowableWasmBuffer(module);
           this.drainPending();
         });
@@ -236,33 +261,72 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
   private processFrame(frame: ImageFrame): void {
     const module = this.module;
     const imgBuffer = this.imgBuffer;
-    const fountainBuffer = this.fountainBuffer;
-    if (!module || !imgBuffer || !fountainBuffer) return;
+    const chunkBuffer = this.chunkBuffer;
+    if (!module || !imgBuffer || !chunkBuffer) return;
 
     const imgView = imgBuffer.ensure(frame.data.length);
     imgView.set(frame.data);
 
-    const outSize = module._cimbard_get_bufsize();
-    const outView = fountainBuffer.ensure(outSize);
+    const chunkCapacity = module._cimbard_get_bufsize();
+    const chunkView = chunkBuffer.ensure(chunkCapacity);
 
-    const len = module._cimbard_scan_extract_decode(
+    // Stage 1: does this frame contain a readable Cimbar symbol, and if
+    // so, extract its raw fountain-coded chunk (not file content yet).
+    const extractedLen = module._cimbard_scan_extract_decode(
       imgBuffer.byteOffset,
       frame.width,
       frame.height,
       PIXEL_FORMAT_RGBA,
-      fountainBuffer.byteOffset,
-      outView.length,
+      chunkBuffer.byteOffset,
+      chunkView.length,
     );
 
-    if (len > 0) {
-      this.result = outView.slice(0, len);
-    } else if (len < 0) {
+    if (extractedLen === 0) return; // No symbol / nothing new this frame.
+    if (extractedLen < 0) {
       // Extraction failed for this frame — expected in live use (motion
       // blur, partial symbol in view, autofocus hunting); keep listening,
       // same tolerance `Scanner` already applies to a QR miss.
       this.reportError();
+      return;
     }
-    // len === 0: no new data yet, nothing to do.
+
+    // Stage 2: accumulate this chunk into the fountain decoder. A C
+    // int64_t comes back as a JS bigint; > 0 once a complete file has
+    // been reconstructed, with the file's id in the low 32 bits.
+    const decodeRes = module._cimbard_fountain_decode(chunkBuffer.byteOffset, extractedLen);
+    if (decodeRes <= 0n) return;
+
+    const fileId = Number(decodeRes & 0xffffffffn);
+    this.result = this.readDecompressedFile(fileId);
+  }
+
+  /** Stage 3: streams the completed file's bytes out (Cimbar applies its own zstd compression in transit; this undoes it). */
+  private readDecompressedFile(fileId: number): Uint8Array {
+    const module = this.module;
+    const decompressBuffer = this.decompressBuffer;
+    if (!module || !decompressBuffer) {
+      throw new Error('CimbarDecoder: module not loaded');
+    }
+
+    const chunkSize = module._cimbard_get_decompress_bufsize();
+    const chunkView = decompressBuffer.ensure(chunkSize);
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const n = module._cimbard_decompress_read(fileId, decompressBuffer.byteOffset, chunkSize);
+      if (n <= 0) break;
+      chunks.push(chunkView.slice(0, n));
+      total += n;
+    }
+
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return out;
   }
 
   private reportError(): void {

@@ -37,10 +37,18 @@ export declare interface CameraOptions {
  * The v2 backend: libcimbar's WASM encoder/decoder (MPL-2.0, vendored —
  * see `THIRD_PARTY_LICENSES.md`), wrapped behind `TransferBackend`. Higher
  * throughput than `qrLtBackend`, at the cost of being far less
- * battle-tested here — this wrapper has been written against libcimbar's
- * reference JS glue but **not exercised against the real WASM binary in a
- * browser** (this repo's test harness has no WebGL/camera available). See
- * the README's Cimbar section before relying on it.
+ * battle-tested — `qrLtBackend` has this project's full test suite behind
+ * it; this doesn't.
+ *
+ * A full encode→decode round trip (byte-exact, through two independent
+ * WASM module instances, so not a shared-memory false positive) has been
+ * verified in a real browser (headless Chromium, software-rendered WebGL —
+ * see README's Cimbar section for the full detail and its real caveats:
+ * unconfirmed on real GPU/camera hardware, and very small payloads, under
+ * roughly a few hundred bytes, can fail — Cimbar pads them to fill a full
+ * fountain chunk, and if that padding is low-entropy the symbol extractor
+ * may not reliably find tile boundaries; this project's own envelope
+ * overhead plus a normal file easily clears that in practice).
  *
  * `Frame` for this backend is rendered pixel data (`ImageFrame`), not a
  * string — `DisplayDriver` and `Scanner` both need to be told to expect
@@ -106,12 +114,19 @@ export declare interface DisplayDriverOptions extends RenderQrOptions {
 declare type EccLevel = 'L' | 'M' | 'Q' | 'H';
 
 export declare interface EncodeOptions<F extends Frame = string> {
-    /** Fragment size (payload bytes per frame). */
+    /** Fragment size (payload bytes per frame). Ignored if `backendOptions` is set. */
     fragmentSize?: number;
     /** Target frame rate in FPS. */
     fps?: number;
     /** Which transfer backend to use. Defaults to `qrLtBackend` (QR + Luby Transform fountain codes). */
     backend?: TransferBackend<F>;
+    /**
+     * Backend-specific encode options (e.g. `CimbarEncodeOptions`), passed
+     * through as-is to `backend.encode()` instead of `{ maxFragmentLength:
+     * fragmentSize }`. Only meaningful together with `backend`/`preferredBackend`
+     * — `qrLtBackend` only understands `maxFragmentLength`.
+     */
+    backendOptions?: unknown;
 }
 
 /**
@@ -165,7 +180,7 @@ export declare class IntegrityError extends Error {
  * which backend is in use. See the README's "Backend negotiation" section.
  */
 export declare interface NegotiatedEncodeOptions {
-    /** Fragment size (payload bytes per frame), passed through to the resolved backend. */
+    /** Fragment size (payload bytes per frame), passed through to the resolved backend. Ignored if `backendOptions` is set. */
     fragmentSize?: number;
     fps?: number;
     preferredBackend: PreferredBackend;
@@ -176,6 +191,8 @@ export declare interface NegotiatedEncodeOptions {
      * this value. Default 10.
      */
     headerIntervalFrames?: number;
+    /** Backend-specific encode options (e.g. `CimbarEncodeOptions`) for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
+    backendOptions?: unknown;
 }
 
 /**

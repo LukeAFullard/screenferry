@@ -2,13 +2,18 @@
 
 /**
  * The subset of libcimbar's Emscripten-exported C ABI this backend calls.
- * There is no published TypeScript surface (or documentation) for this
- * build — these signatures are reverse-engineered from libcimbar's own
- * reference web glue (`send.js` / `recv-worker.js` / `main.js` inside the
- * v0.6.8 release tarball; see `THIRD_PARTY_LICENSES.md` for provenance),
- * not from an upstream spec. Treat this as "matches the reference
- * implementation's call pattern," not as a verified/stable ABI contract —
- * it has not been exercised against the real WASM binary in a browser.
+ * There is no published TypeScript surface for this build — these
+ * signatures were reverse-engineered from three sources, in ascending
+ * order of authority: libcimbar's reference web glue (`send.js`/
+ * `recv-worker.js`/`main.js`/`recv.js` inside the v0.6.8 release tarball;
+ * see `THIRD_PARTY_LICENSES.md` for provenance), which turned out to only
+ * show *part* of the real call sequence (see `_cimbard_fountain_decode`'s
+ * doc comment below); its own C++ source
+ * (`src/lib/cimbar_js/cimbar_js.cpp`/`cimbar_recv_js.cpp` in
+ * github.com/sz3/libcimbar), which is authoritative for behavior; and
+ * direct testing against the vendored WASM binary itself, which is
+ * authoritative for "does this actually work." A full encode→decode round
+ * trip has been verified this way — see `cimbarBackend`'s doc comment.
  */
 export interface CimbarModule {
   HEAPU8: Uint8Array;
@@ -31,7 +36,22 @@ export interface CimbarModule {
   _cimbare_render(): void;
   _cimbare_next_frame(colorBalance: number): number;
 
+  /** Selects the decode mode — must match the encoder's `_cimbare_configure` mode, or extraction fails on every frame. */
+  _cimbard_configure_decode(mode: number): void;
   _cimbard_get_bufsize(): number;
+  /**
+   * Per-frame step 1 of 2: scans `frame`'s pixels for a Cimbar symbol and,
+   * if found, extracts that frame's *raw fountain-coded chunk* into
+   * `outPtr` — **not** the final file. Returns the chunk's length (0 = no
+   * data this frame, negative = symbol extraction failed this frame,
+   * positive = got a chunk, pass it to `_cimbard_fountain_decode` next).
+   * Despite the name, this alone never yields decoded file content — see
+   * `recv.js`'s `Sink.on_decode` in the reference tarball, which is the
+   * only place that pattern is actually documented (not in any prose
+   * doc): the worker-side `recv-worker.js` (which this call pattern was
+   * originally modeled on) only *looks* self-contained because it hands
+   * its result to a separate, main-thread `Sink` that does the rest.
+   */
   _cimbard_scan_extract_decode(
     imgPtr: number,
     width: number,
@@ -40,6 +60,27 @@ export interface CimbarModule {
     outPtr: number,
     outLen: number,
   ): number;
+  /**
+   * Per-frame step 2 of 2: accumulates one frame's extracted chunk (from
+   * `_cimbard_scan_extract_decode`) into the fountain-decode state.
+   * Emscripten returns a C `int64_t` as a JS `bigint`. `> 0` once enough
+   * chunks have accumulated to reconstruct a complete file — the low
+   * 32 bits (truncate: `Number(res & 0xFFFFFFFFn)`) are that file's `id`,
+   * used with `_cimbard_get_filesize`/`_cimbard_decompress_read`. `<= 0`
+   * means "not complete yet, keep feeding it frames."
+   */
+  _cimbard_fountain_decode(ptr: number, len: number): bigint;
+  _cimbard_get_filesize(id: number): number;
+  _cimbard_get_filename(id: number, bufPtr: number, bufLen: number): number;
+  /** Chunk size for `_cimbard_decompress_read`. */
+  _cimbard_get_decompress_bufsize(): number;
+  /**
+   * Streams the completed file's bytes out in chunks (Cimbar applies its
+   * own internal zstd compression in transit — this undoes it): call
+   * repeatedly until it returns `<= 0` (no more data), concatenating each
+   * chunk of the returned length written to `bufPtr`.
+   */
+  _cimbard_decompress_read(id: number, bufPtr: number, bufLen: number): number;
   _cimbard_get_report(bufPtr: number, bufLen: number): number;
 
   canvas?: unknown;

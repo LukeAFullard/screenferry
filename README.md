@@ -125,26 +125,42 @@ frames for denser color-based ones.
 
 - **Higher throughput, far less battle-tested.** `qrLtBackend` has this
   project's full loopback/fault-injection/reliability-matrix test suite
-  behind it; `cimbarBackend` does not. It's been partially — not
-  fully — verified in a real browser (headless Chromium, software-rendered
-  WebGL via `swiftshader`, no real GPU or camera): the WASM module loads,
-  the encoder genuinely binds a WebGL context and renders, `gl.readPixels`
-  reads real (non-blank) frame data back, and the decoder's WASM calls run
-  without crashing. What that session did **not** confirm: a full transfer
-  actually completing. At the default 1024×1024 `frameSize`, each frame
-  took long enough under *software* rendering that a full multi-frame
-  transfer didn't finish in over two minutes (`swiftshader`-specific —
-  `GL Driver Message: GPU stall due to ReadPixels` on every frame — a real
-  GPU should be dramatically faster, but that's not yet confirmed on real
-  hardware). At `frameSize: 64` the same pipeline rendered each frame in
-  tens of milliseconds, confirming the slowdown scales with resolution
-  rather than indicating a hang. Whether the *pixel content* is actually
-  correct (not just non-blank) hasn't been checked — that needs an actual
-  camera round-trip. Treat it as experimental until someone has
-  smoke-tested a full transfer, at the real 1024×1024 size, on real
-  hardware with a real GPU and camera. `examples/app.html`'s "Self-test"
-  section (backend dropdown → "Run self-test") is the fastest way to check
-  this on a given device — no second device or camera needed.
+  behind it; `cimbarBackend` does not.
+- **Correctness: verified.** A full encode→decode round trip — byte-exact,
+  through two genuinely independent WASM module instances (separate
+  browser contexts, not a shared-memory false positive) — has been
+  confirmed in a real browser (headless Chromium, software-rendered WebGL
+  via `swiftshader`), at both 256×256 and the default 1024×1024
+  `frameSize`. This took real debugging to get right, worth knowing about
+  if you're extending this backend: libcimbar's decode is a **two-stage**
+  pipeline undocumented anywhere in prose — `_cimbard_scan_extract_decode`
+  (per-frame symbol extraction) only *looks* self-contained from the
+  reference JS glue's worker-side half; the reference's separate
+  main-thread half is what actually calls `_cimbard_fountain_decode` (the
+  real completion signal) and `_cimbard_decompress_read` (Cimbar applies
+  its own internal zstd compression in transit). Also needed: an explicit
+  `_cimbard_configure_decode(mode)` call matching the encoder's mode,
+  never called by the reference JS at all for the default case. Both are
+  implemented and covered by this wrapper now (see
+  `src/backends/cimbar/module.ts`'s doc comments for the full trail).
+  **One real gotcha found along the way:** very small payloads (roughly
+  under a few hundred bytes) can fail — Cimbar pads short input to fill a
+  full fountain chunk, and if that padding is low-entropy, the symbol
+  extractor may not reliably find tile boundaries. A normal file plus this
+  project's own envelope overhead clears that easily in practice (this
+  project's own default sample payload, ~2.4KB, round-trips reliably).
+- **Performance: unverified on real hardware, confirmed slow under
+  software rendering.** The full pipeline (`DisplayDriver` → canvas
+  capture → `Scanner` → decode) did not complete within several minutes
+  under `swiftshader` at the 1024×1024 default — `GL Driver Message: GPU
+  stall due to ReadPixels` on every frame confirms this is a software
+  -rendering-specific cost (`gl.readPixels` forces a full GPU pipeline
+  sync), not a hang: a direct, non-UI encode/decode round trip at the same
+  resolution completes in well under a second. A real GPU should be
+  dramatically faster, but that's genuinely unconfirmed — this needs a
+  real-device smoke test to know for sure. `examples/app.html` now exposes
+  `frameSize` as a live control specifically so you can find a resolution
+  that performs acceptably on your own device.
 - **More sensitive to camera/screen color accuracy** than QR's
   black-and-white frames — screen color calibration, camera white balance,
   and ambient lighting all matter more here.
@@ -162,13 +178,17 @@ frames for denser color-based ones.
 Per libcimbar's default "mode B" (4-color, 6 bits/tile, Reed-Solomon
 ecc=30/155) at its documented 1024×1024 grid: roughly 7,500 usable bytes
 per frame, versus `qrLtBackend`'s ~580-byte QR fragment — the throughput
-gain is real, on the order of 10x per frame, when it works.
+gain is real, on the order of 10x per frame, once performance on real
+hardware is confirmed.
 
 `CimbarEncodeOptions.frameSize` lets you render at a resolution other than
-the 1024×1024 default (useful for the performance testing above), but only
-if you call `cimbarBackend.encode()` directly — `encodeToFrames`/
-`encodeFileToParts` don't currently thread backend-specific options through
-`opts.backend`, only `maxFragmentLength`. A known gap, not by design.
+the 1024×1024 default — useful for the performance tuning above. Pass it
+via `encodeToFrames`'s `backendOptions`:
+`encodeToFrames(file, { backend: cimbarBackend, backendOptions: { frameSize: 256 } })`
+(or `{ preferredBackend: 'cimbar', backendOptions: {...} }` in negotiated
+mode) — `backendOptions` is forwarded to `backend.encode()` as-is, in
+place of `{ maxFragmentLength }`; `qrLtBackend` doesn't understand it, so
+this only matters when a `backend`/`preferredBackend` is also set.
 
 **Frame shape differs.** `Frame` for this backend is rendered pixel data
 (`ImageFrame: { data, width, height }`), not a string. `DisplayDriver`
@@ -300,8 +320,11 @@ open `http://localhost:5500/examples/app.html`.
 `examples/app.html` is a small, unstyled test page covering both backends
 and negotiation: a same-device self-test (no camera needed — the fastest
 way to check whether a backend works at all on a given browser/device) and
-real sender/receiver sections for actual cross-device testing. Not part of
-the published package.
+real sender/receiver sections for actual cross-device testing. It also
+exposes live tuning controls — `fps`, `fragmentSize`, `scanHz` (see
+"Backend negotiation" → speed tuning notes on the page itself), and
+`frameSize` for `cimbarBackend` — so you can experiment directly on a
+given device rather than editing code. Not part of the published package.
 
 `examples/` also has narrower single-purpose demos from earlier stages
 (`sender-demo.html`, `receiver-demo.html`, `loopback-demo.html`,
