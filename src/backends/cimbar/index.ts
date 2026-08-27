@@ -3,18 +3,26 @@ import type { BackendDecoder, ImageFrame, TransferBackend } from '../types';
 
 /**
  * `68` = libcimbar's default/reference encode mode ("mode B" — see
- * `main.js`'s `setMode('B')` fallthrough in the reference web app). Other
- * modes (4-color, "Bu", "Bm") trade throughput for reliability differently;
- * exposing that choice is future work, not this pass.
+ * `main.js`'s `setMode('B')` fallthrough in the reference web app). Per
+ * both the original `sz3/cimbar` Python research project's `README.md`
+ * ("Mode B (8x8 grid): 4-color, 30/155 ecc, 6-bits-per-tile ... raw
+ * capacity 9,300 bytes, ~7,500 with error correction") and libcimbar's own
+ * `DETAILS.md` (independently citing the same 9,300-byte raw capacity for
+ * its "6-bit cimbar" mode), mode B is the 4-color/6-bit-per-tile mode —
+ * the balanced default, not the densest (8-color/7-bit "Mode 8C") option.
+ * Other modes ("4C", "Bu", "Bm") trade throughput for reliability
+ * differently; exposing that choice is future work, not this pass.
  */
 const DEFAULT_MODE = 68;
 
 /**
- * Encode/decode canvas resolution. Unlike the reference web app (which
- * lets the browser's own `<canvas>` sizing drive this), nothing observed
- * in the reference glue pins down a specific default — this is a starting
- * guess for a phone-camera-to-laptop-screen distance, not a verified value.
- * **Needs real-device tuning** (see README's Cimbar section).
+ * Encode/decode canvas resolution. `sz3/cimbar`'s `ABOUT.md` (the original
+ * Python research project libcimbar is a from-scratch C++ rewrite of)
+ * documents 1024x1024 as its own grid size, chosen "semi-arbitrarily" but
+ * "under 1080x1080 (for monitor resolution reasons)" — libcimbar's WASM
+ * build isn't confirmed to use the exact same figure, but this is a
+ * sourced default rather than a blind guess. **Still needs real-device
+ * confirmation** (see README's Cimbar section).
  */
 const DEFAULT_FRAME_SIZE = 1024;
 
@@ -122,6 +130,12 @@ function initEncoder(frameSize: number) {
  * string — `DisplayDriver` and `Scanner` both need to be told to expect
  * that (see their respective option docs) when using this backend instead
  * of the default.
+ *
+ * libcimbar's `DETAILS.md` documents a ~33.55MB file-size ceiling on its
+ * own (wirehair) fountain layer — unlike `qrLtBackend`'s bc-ur/LT layer,
+ * which has no such documented limit. Not enforced here (unconfirmed
+ * against this exact WASM build, and rejecting on an unverified number
+ * risks false negatives); a transfer past that size may simply fail.
  */
 export const cimbarBackend: TransferBackend<ImageFrame> = {
   id: 'cimbar',
