@@ -175,6 +175,77 @@ keeps the decoder on the main thread too for interface-contract simplicity
 (`BackendDecoder.addFrame` is synchronous). Moving either off-thread is
 possible future work, not done here.
 
+## Backend negotiation ("fast mode")
+
+Pinning `backend: cimbarBackend` (above) requires both sides to already
+agree on it out of band — fine for a controlled setup, awkward for a
+general "download this file" flow where you don't know the receiver's
+browser in advance. `preferredBackend` solves that: pass it instead of
+`backend`, and the sender negotiates automatically.
+
+```ts
+import { encodeToFrames, DisplayDriver, NegotiatingReceiverSession } from 'screenferry';
+
+// sending — tries cimbarBackend, falls back to qrLtBackend if unavailable
+const driver = new DisplayDriver(encodeToFrames(file, { preferredBackend: 'auto' }), canvas);
+driver.start();
+
+// receiving — never told which backend the sender picked
+const session = new NegotiatingReceiverSession({
+  onBackendResolved: (id) => console.log(`sender is using ${id}`),
+  onComplete,
+  onError,
+});
+await session.start(video);
+```
+
+**How it works.** There's no return channel (the design has never had
+one — see "How it works" above), so the two sides can't literally ask each
+other what they support. Instead, the sender always renders a small,
+fixed *header frame* as **plain QR** first — regardless of which backend
+it then switches to for the data — and repeats it periodically
+(`headerIntervalFrames`, default every 10 data frames) so a receiver that
+joins mid-stream or missed the first one still picks it up quickly. QR
+decoders are universal, so that header is always readable; it tells the
+receiver which backend to expect for everything after it.
+`NegotiatingReceiverSession` always starts listening in plain-QR mode for
+exactly this reason, and switches `Scanner` into `rawFrames` mode itself
+the moment it sees a non-`qr-lt` announcement — you never pass `backend`
+or `rawFrames` yourself in this mode.
+
+**`preferredBackend` values:**
+
+- `"auto"` — tries `cimbarBackend` (via `probeCimbarAvailable()`, which
+  never throws); falls back to `qrLtBackend` if it's not usable here
+  (unsupported browser, WASM blocked by CSP, non-browser host).
+- `"qr-lt"` / `"cimbar"` — pin one explicitly, but *still* negotiated
+  (still sends the header frame) — useful if you want negotiation's
+  receiver-side auto-detection without `"auto"`'s runtime capability
+  probe.
+
+If you don't need any of this — both ends are your own code and you
+already know which backend to use — the plain `backend`/`rawFrames`
+pinning documented above stays available and skips the header-frame
+overhead entirely; `encodeToFrames`/`StreamDecoder`/`ReceiverSession`
+never send or expect one.
+
+**UX guidance.** Don't surface backend names to end users. Recommend
+something like a "Fast mode" toggle or badge (needs a good camera; falls
+back automatically) rather than "Cimbar" or "QR" — the whole point of
+negotiation is that nobody using this needs to know backends exist. Call
+`probeCimbarAvailable()` yourself ahead of time if you want to decide
+whether to even offer that toggle, rather than waiting to find out via
+`"auto"`.
+
+**Caveat inherited from `cimbarBackend`:** negotiating *to* Cimbar carries
+the same "not yet exercised against the real WASM binary in a browser"
+caveat as pinning it directly — see above. The negotiation mechanics
+themselves (header frame encode/decode, `NegotiatingStreamDecoder`'s
+backend detection and switching, `"auto"`'s fallback logic) are covered by
+this project's headless test suite and don't depend on Cimbar actually
+working; only the "receiver's camera successfully switches mid-transfer
+and decodes real Cimbar frames" path is unverified.
+
 ## Browser support
 
 - Requires `getUserMedia`, Web Workers, WebAssembly, and `OffscreenCanvas`-adjacent
@@ -203,11 +274,14 @@ possible future work, not done here.
 The public API is exactly what the package's root export (`import ... from
 'screenferry'`) exposes: `encodeToFrames`, `DisplayDriver`, `Scanner`,
 `Camera`, `StreamDecoder`, `ReceiverSession`, `IntegrityError`,
-`qrLtBackend`, `cimbarBackend`, and their associated option/type exports
-(`TransferBackend`, `Frame`, `ImageFrame`, `CimbarEncodeOptions`, ...).
-Internal modules (anything under `src/codec`, `src/backends`, `src/scan` in
-the source) are implementation details and can change in a minor or patch
-release. Versioning follows semver strictly from 1.0.0.
+`qrLtBackend`, `cimbarBackend`, `NegotiatingStreamDecoder`,
+`NegotiatingReceiverSession`, `probeCimbarAvailable`,
+`resolvePreferredBackend`, and their associated option/type exports
+(`TransferBackend`, `Frame`, `ImageFrame`, `CimbarEncodeOptions`,
+`PreferredBackend`, `NegotiatedEncodeOptions`, ...). Internal modules
+(anything under `src/codec`, `src/backends`, `src/scan` in the source) are
+implementation details and can change in a minor or patch release.
+Versioning follows semver strictly from 1.0.0.
 
 ## Non-goals
 
