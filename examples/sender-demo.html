@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>screenferry — sender demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 640px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      canvas {
+        border: 1px solid #ccc;
+        image-rendering: pixelated;
+        width: 320px;
+        height: 320px;
+      }
+      #status {
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
+      button {
+        margin-right: 0.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>screenferry — sender demo</h1>
+    <p>
+      Manual smoke test for Stage 4 (sender pipeline). Picks a file (or uses a built-in sample
+      payload) and animates it as a stream of QR frames.
+    </p>
+
+    <p>
+      <input type="file" id="file-input" />
+    </p>
+    <p>
+      <button id="start">Start</button>
+      <button id="stop">Stop</button>
+    </p>
+    <canvas id="qr-canvas"></canvas>
+    <pre id="status">idle</pre>
+
+    <script type="module">
+      import { encodeToFrames, DisplayDriver } from '../dist/index.js';
+
+      const canvas = document.getElementById('qr-canvas');
+      const status = document.getElementById('status');
+      const fileInput = document.getElementById('file-input');
+
+      let driver;
+
+      function defaultSampleFile() {
+        const text = 'screenferry sender demo — sample payload\n'.repeat(50);
+        return new File([text], 'sample.txt', { type: 'text/plain' });
+      }
+
+      document.getElementById('start').addEventListener('click', () => {
+        driver?.stop();
+
+        const file = fileInput.files?.[0] ?? defaultSampleFile();
+        const frames = encodeToFrames(file);
+
+        let frameCount = 0;
+        driver = new DisplayDriver(frames, canvas, {
+          fps: 10,
+          onFrameSent: (index) => {
+            frameCount = index + 1;
+            status.textContent = `sending "${file.name}" (${file.size} bytes) — frame ${frameCount}`;
+          },
+        });
+        driver.start();
+        status.textContent = `starting "${file.name}"...`;
+      });
+
+      document.getElementById('stop').addEventListener('click', () => {
+        driver?.stop();
+        status.textContent = 'stopped';
+      });
+    </script>
+  </body>
+</html>
