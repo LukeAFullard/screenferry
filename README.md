@@ -125,11 +125,26 @@ frames for denser color-based ones.
 
 - **Higher throughput, far less battle-tested.** `qrLtBackend` has this
   project's full loopback/fault-injection/reliability-matrix test suite
-  behind it; `cimbarBackend` does not — this repo's headless test harness
-  has no WebGL or camera available to exercise it against. It has been
-  written against libcimbar's own reference implementation but **not
-  verified against the real WASM binary in an actual browser.** Treat it as
-  experimental until someone has smoke-tested it on real devices.
+  behind it; `cimbarBackend` does not. It's been partially — not
+  fully — verified in a real browser (headless Chromium, software-rendered
+  WebGL via `swiftshader`, no real GPU or camera): the WASM module loads,
+  the encoder genuinely binds a WebGL context and renders, `gl.readPixels`
+  reads real (non-blank) frame data back, and the decoder's WASM calls run
+  without crashing. What that session did **not** confirm: a full transfer
+  actually completing. At the default 1024×1024 `frameSize`, each frame
+  took long enough under *software* rendering that a full multi-frame
+  transfer didn't finish in over two minutes (`swiftshader`-specific —
+  `GL Driver Message: GPU stall due to ReadPixels` on every frame — a real
+  GPU should be dramatically faster, but that's not yet confirmed on real
+  hardware). At `frameSize: 64` the same pipeline rendered each frame in
+  tens of milliseconds, confirming the slowdown scales with resolution
+  rather than indicating a hang. Whether the *pixel content* is actually
+  correct (not just non-blank) hasn't been checked — that needs an actual
+  camera round-trip. Treat it as experimental until someone has
+  smoke-tested a full transfer, at the real 1024×1024 size, on real
+  hardware with a real GPU and camera. `examples/app.html`'s "Self-test"
+  section (backend dropdown → "Run self-test") is the fastest way to check
+  this on a given device — no second device or camera needed.
 - **More sensitive to camera/screen color accuracy** than QR's
   black-and-white frames — screen color calibration, camera white balance,
   and ambient lighting all matter more here.
@@ -148,6 +163,12 @@ Per libcimbar's default "mode B" (4-color, 6 bits/tile, Reed-Solomon
 ecc=30/155) at its documented 1024×1024 grid: roughly 7,500 usable bytes
 per frame, versus `qrLtBackend`'s ~580-byte QR fragment — the throughput
 gain is real, on the order of 10x per frame, when it works.
+
+`CimbarEncodeOptions.frameSize` lets you render at a resolution other than
+the 1024×1024 default (useful for the performance testing above), but only
+if you call `cimbarBackend.encode()` directly — `encodeToFrames`/
+`encodeFileToParts` don't currently thread backend-specific options through
+`opts.backend`, only `maxFragmentLength`. A known gap, not by design.
 
 **Frame shape differs.** `Frame` for this backend is rendered pixel data
 (`ImageFrame: { data, width, height }`), not a string. `DisplayDriver`
@@ -268,6 +289,20 @@ and decodes real Cimbar frames" path is unverified.
   currently only works on the main thread, not inside a Worker. Its ~2MB
   WASM binary is self-hosted the same way and lazy-loaded the same way:
   nothing pays for it unless `cimbarBackend` is actually used.
+
+## Manual testing
+
+`npm run demo` builds the library and serves the whole repo on
+`http://localhost:5500` — open `http://localhost:5500/examples/app.html`
+for a small, unstyled test page covering both backends and negotiation:
+a same-device self-test (no camera needed — the fastest way to check
+whether a backend works at all on a given browser/device) and real
+sender/receiver sections for actual cross-device testing. Not part of the
+published package.
+
+`examples/` also has narrower single-purpose demos from earlier stages
+(`sender-demo.html`, `receiver-demo.html`, `loopback-demo.html`,
+`scan-worker-check.html`) — same serving instructions, `qrLtBackend` only.
 
 ## API stability
 

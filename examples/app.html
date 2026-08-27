@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>screenferry — test app</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 720px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      section {
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+      }
+      h2 {
+        margin-top: 0;
+      }
+      canvas {
+        border: 1px solid #ccc;
+        image-rendering: pixelated;
+        width: 260px;
+        height: 260px;
+        background: #fff;
+      }
+      video {
+        border: 1px solid #ccc;
+        width: 260px;
+        height: 195px;
+        background: #000;
+      }
+      .row {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+      }
+      #status,
+      #live-send-status,
+      #live-recv-status {
+        font-family: monospace;
+        white-space: pre-wrap;
+        background: #f5f5f5;
+        padding: 0.5rem;
+        border-radius: 4px;
+      }
+      progress {
+        width: 260px;
+      }
+      label {
+        margin-right: 1rem;
+      }
+      button {
+        margin-right: 0.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>screenferry — test app</h1>
+    <p>
+      A basic manual test harness — not part of the library, not published. Uses the negotiated API
+      (<code>preferredBackend</code>), so it exercises <code>qrLtBackend</code>,
+      <code>cimbarBackend</code>, and the header-frame auto-detection between them.
+    </p>
+
+    <p>
+      <label>Backend: </label>
+      <select id="backend">
+        <option value="qr-lt" selected>qr-lt (default, well-tested)</option>
+        <option value="cimbar">cimbar (opt-in, unverified — see README)</option>
+        <option value="auto">auto (negotiated)</option>
+      </select>
+    </p>
+
+    <section>
+      <h2>1. Self-test (no camera needed)</h2>
+      <p>
+        Sends a file to a hidden canvas and reads it straight back via a captured canvas stream —
+        same trick as <code>loopback-demo.html</code>. Runs the real <code>encodeToFrames</code> →
+        <code>DisplayDriver</code> → <code>NegotiatingReceiverSession</code> pipeline end to end, in
+        this browser, without needing a second device or a real camera. This is the fastest way to
+        check whether the selected backend actually works here at all.
+      </p>
+      <p>
+        <input type="file" id="self-test-file" />
+        <button id="self-test-start">Run self-test</button>
+      </p>
+      <div class="row">
+        <div>
+          <p><small>Sender canvas</small></p>
+          <canvas id="self-test-sender-canvas"></canvas>
+        </div>
+        <div>
+          <p><small>"Camera" (mirrors sender)</small></p>
+          <canvas id="self-test-camera-canvas" width="1024" height="1024"></canvas>
+        </div>
+      </div>
+      <progress id="self-test-progress" value="0" max="1"></progress>
+      <pre id="status">idle</pre>
+      <p><a id="self-test-download" style="display: none">Download reconstructed file</a></p>
+    </section>
+
+    <section>
+      <h2>2. Send (real screen, for a second device to scan)</h2>
+      <p>
+        Requires a real camera on the receiving end (section 3, on this device or another one). If
+        the receiver is a <em>different</em> device on your network, plain
+        <code>http://&lt;lan-ip&gt;</code> won't get camera access — browsers require a secure
+        context (<code>https://</code>, or <code>localhost</code> on the same device) for
+        <code>getUserMedia</code>. See the README's Browser support section.
+      </p>
+      <p>
+        <input type="file" id="live-send-file" />
+        <button id="live-send-start">Start</button>
+        <button id="live-send-stop">Stop</button>
+      </p>
+      <canvas id="live-send-canvas"></canvas>
+      <pre id="live-send-status">idle</pre>
+    </section>
+
+    <section>
+      <h2>3. Receive (real camera)</h2>
+      <p>Point this device's camera at another device running section 2.</p>
+      <video id="live-recv-video" autoplay playsinline muted></video>
+      <p>
+        <button id="live-recv-start">Start scanning</button>
+        <button id="live-recv-stop">Stop</button>
+      </p>
+      <progress id="live-recv-progress" value="0" max="1"></progress>
+      <pre id="live-recv-status">idle</pre>
+      <p><a id="live-recv-download" style="display: none">Download reconstructed file</a></p>
+    </section>
+
+    <script type="module">
+      import { encodeToFrames, DisplayDriver, NegotiatingReceiverSession } from '../dist/index.js';
+
+      function selectedBackend() {
+        return document.getElementById('backend').value;
+      }
+
+      function defaultSampleFile(label) {
+        const text = `screenferry test app (${label}) — sample payload\n`.repeat(50);
+        return new File([text], `${label}.txt`, { type: 'text/plain' });
+      }
+
+      // --- 1. Self-test: same trick as loopback-demo.html, plus a backend picker. ---
+      {
+        const senderCanvas = document.getElementById('self-test-sender-canvas');
+        const cameraCanvas = document.getElementById('self-test-camera-canvas');
+        const cameraCtx = cameraCanvas.getContext('2d');
+        const status = document.getElementById('status');
+        const progress = document.getElementById('self-test-progress');
+        const downloadLink = document.getElementById('self-test-download');
+
+        let mirrorHandle;
+        function startMirroring() {
+          (function mirror() {
+            if (senderCanvas.width && senderCanvas.height) {
+              cameraCanvas.width = senderCanvas.width;
+              cameraCanvas.height = senderCanvas.height;
+              cameraCtx.drawImage(senderCanvas, 0, 0);
+            }
+            mirrorHandle = requestAnimationFrame(mirror);
+          })();
+        }
+        function stopMirroring() {
+          if (mirrorHandle) cancelAnimationFrame(mirrorHandle);
+        }
+
+        document.getElementById('self-test-start').addEventListener('click', async () => {
+          downloadLink.style.display = 'none';
+          progress.value = 0;
+
+          const backend = selectedBackend();
+          const file =
+            document.getElementById('self-test-file').files?.[0] ?? defaultSampleFile(backend);
+
+          const fakeStream = cameraCanvas.captureStream(15);
+          const originalGetUserMedia = navigator.mediaDevices.getUserMedia;
+          navigator.mediaDevices.getUserMedia = async () => fakeStream;
+          startMirroring();
+
+          const senderDriver = new DisplayDriver(
+            encodeToFrames(file, { preferredBackend: backend }),
+            senderCanvas,
+            { fps: 10 },
+          );
+          senderDriver.start();
+
+          function cleanup() {
+            senderDriver.stop();
+            stopMirroring();
+            navigator.mediaDevices.getUserMedia = originalGetUserMedia;
+          }
+
+          const session = new NegotiatingReceiverSession({
+            onBackendResolved: (id) => {
+              status.textContent = `sender announced backend: ${id}`;
+            },
+            onProgress: (p) => {
+              progress.value = p;
+              status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%`;
+            },
+            onComplete: (resultFile) => {
+              status.textContent = `done: "${resultFile.name}" (${resultFile.size} bytes) via ${backend}`;
+              cleanup();
+
+              const url = URL.createObjectURL(resultFile);
+              downloadLink.href = url;
+              downloadLink.download = resultFile.name;
+              downloadLink.textContent = `Download ${resultFile.name}`;
+              downloadLink.style.display = 'inline';
+            },
+            onError: (err) => {
+              status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
+              cleanup();
+            },
+          });
+
+          try {
+            await session.start();
+            status.textContent = `sending + receiving "${file.name}" via ${backend}...`;
+          } catch (err) {
+            status.textContent = `failed to start: ${err?.message ?? err}`;
+            cleanup();
+          }
+        });
+      }
+
+      // --- 2. Live send: animates the chosen file/backend onto a real, visible canvas. ---
+      {
+        const canvas = document.getElementById('live-send-canvas');
+        const status = document.getElementById('live-send-status');
+        let driver;
+
+        document.getElementById('live-send-start').addEventListener('click', () => {
+          driver?.stop();
+
+          const backend = selectedBackend();
+          const file =
+            document.getElementById('live-send-file').files?.[0] ?? defaultSampleFile(backend);
+          const frames = encodeToFrames(file, { preferredBackend: backend });
+
+          driver = new DisplayDriver(frames, canvas, {
+            fps: 10,
+            onFrameSent: (index) => {
+              status.textContent = `sending "${file.name}" via ${backend} — frame ${index + 1}`;
+            },
+          });
+          driver.start();
+          status.textContent = `starting "${file.name}" via ${backend}...`;
+        });
+
+        document.getElementById('live-send-stop').addEventListener('click', () => {
+          driver?.stop();
+          status.textContent = 'stopped';
+        });
+      }
+
+      // --- 3. Live receive: real camera, backend auto-detected from the header frame. ---
+      {
+        const video = document.getElementById('live-recv-video');
+        const status = document.getElementById('live-recv-status');
+        const progress = document.getElementById('live-recv-progress');
+        const downloadLink = document.getElementById('live-recv-download');
+
+        const session = new NegotiatingReceiverSession({
+          onBackendResolved: (id) => {
+            status.textContent = `sender is using: ${id}`;
+          },
+          onProgress: (p) => {
+            progress.value = p;
+            status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)`;
+          },
+          onComplete: (file) => {
+            status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type})`;
+
+            const url = URL.createObjectURL(file);
+            downloadLink.href = url;
+            downloadLink.download = file.name;
+            downloadLink.textContent = `Download ${file.name}`;
+            downloadLink.style.display = 'inline';
+          },
+          onError: (err) => {
+            status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
+          },
+        });
+
+        document.getElementById('live-recv-start').addEventListener('click', async () => {
+          downloadLink.style.display = 'none';
+          status.textContent = 'requesting camera...';
+          try {
+            await session.start(video);
+            status.textContent = 'scanning...';
+          } catch (err) {
+            status.textContent = `failed to start: ${err?.message ?? err}`;
+          }
+        });
+
+        document.getElementById('live-recv-stop').addEventListener('click', () => {
+          session.stop();
+          status.textContent = 'stopped';
+        });
+      }
+    </script>
+  </body>
+</html>
