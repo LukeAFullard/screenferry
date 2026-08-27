@@ -33,9 +33,9 @@ encoder for the same reason.
   configurable rate (`DisplayDriver`'s `fps` option, default 10fps) — lower
   contrast and monochrome, but still a strobing pattern at a rate that can
   affect sensitive viewers.
-- A prospective Cimbar backend (v2, higher throughput) uses rapidly cycling
-  **color** patterns, which carries a materially higher photosensitivity
-  risk than QR's black-and-white frames.
+- The optional `cimbarBackend` (v2, higher throughput — see below) uses
+  rapidly cycling **color** patterns, which carries a materially higher
+  photosensitivity risk than QR's black-and-white frames.
 - **Any application built on this library should surface its own warning**
   before displaying the sender's animation — screenferry does not show a
   warning UI itself, since it has no UI layer at all (see Scope above).
@@ -76,10 +76,10 @@ canvas renderer/animator, but you can drive the stream yourself with any
 QR rendering approach if you need more control.
 
 Both `encodeToFrames` and `StreamDecoder` accept an optional `backend`,
-defaulting to `qrLtBackend` (QR codes + Luby Transform fountain codes) —
-today's only backend, but the same `TransferBackend` interface a future
-Cimbar backend will implement. Omitting it is equivalent to passing
-`qrLtBackend` explicitly.
+defaulting to `qrLtBackend` (QR codes + Luby Transform fountain codes).
+Omitting it is equivalent to passing `qrLtBackend` explicitly. The same
+`TransferBackend` interface is also implemented by `cimbarBackend` — see
+the dedicated section below before reaching for it.
 
 ### Receiving a file
 
@@ -113,6 +113,59 @@ If you have frame data from somewhere other than a camera (a test harness,
 a future screen-share receiver), use `StreamDecoder` directly — feed it
 strings via `addFrame()`, check `.isComplete`, then `await .getResult()`.
 
+## Cimbar backend (v2, opt-in)
+
+`cimbarBackend` wraps [libcimbar](https://github.com/sz3/libcimbar)'s
+official WASM build (MPL-2.0, vendored — see
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)) behind the same
+`TransferBackend` interface as `qrLtBackend`, trading QR's black-and-white
+frames for denser color-based ones.
+
+**Read this before reaching for it:**
+
+- **Higher throughput, far less battle-tested.** `qrLtBackend` has this
+  project's full loopback/fault-injection/reliability-matrix test suite
+  behind it; `cimbarBackend` does not — this repo's headless test harness
+  has no WebGL or camera available to exercise it against. It has been
+  written against libcimbar's own reference implementation but **not
+  verified against the real WASM binary in an actual browser.** Treat it as
+  experimental until someone has smoke-tested it on real devices.
+- **More sensitive to camera/screen color accuracy** than QR's
+  black-and-white frames — screen color calibration, camera white balance,
+  and ambient lighting all matter more here.
+- **Larger WASM payload** (~2MB, encoder and decoder both loaded from one
+  binary) — lazy-loaded via a dynamic import exactly like the QR decode
+  stack, so a consumer who never uses `cimbarBackend` doesn't pay for it,
+  but a receiver that does still pays this cost up front.
+- **Higher photosensitivity risk** — see the warning above.
+- This is why it stays opt-in, never the default.
+
+**Frame shape differs.** `Frame` for this backend is rendered pixel data
+(`ImageFrame: { data, width, height }`), not a string. `DisplayDriver`
+already handles both shapes transparently. `Scanner` needs to be told
+explicitly, via `rawFrames: true` in its options, to hand back raw camera
+pixels instead of running its QR text-decode worker — pair that with
+passing `backend: cimbarBackend` to `StreamDecoder`/`ReceiverSession`;
+nothing checks that the two agree:
+
+```ts
+import { cimbarBackend, encodeToFrames, DisplayDriver, ReceiverSession } from 'screenferry';
+
+// sending
+const driver = new DisplayDriver(encodeToFrames(file, { backend: cimbarBackend }), canvas);
+
+// receiving
+const session = new ReceiverSession({ onComplete, onError }, cimbarBackend);
+await session.start(video, { rawFrames: true });
+```
+
+**Runs on the main thread**, unlike the QR decode path — libcimbar's
+encoder owns a WebGL-bound canvas directly (it isn't a pure function you
+can call off-thread without transferring that canvas), and this wrapper
+keeps the decoder on the main thread too for interface-contract simplicity
+(`BackendDecoder.addFrame` is synchronous). Moving either off-thread is
+possible future work, not done here.
+
 ## Browser support
 
 - Requires `getUserMedia`, Web Workers, WebAssembly, and `OffscreenCanvas`-adjacent
@@ -130,17 +183,22 @@ strings via `addFrame()`, check `.isComplete`, then `await .getResult()`.
   access. That worker/WASM code is only downloaded when `Scanner`/`ReceiverSession`
   is actually used, so a sender-only integration (just `encodeToFrames`)
   never pays that cost.
+- `cimbarBackend` additionally needs `OffscreenCanvas` and a working WebGL
+  (or WebGL2) context, and — being a classic (non-ESM) Emscripten build —
+  currently only works on the main thread, not inside a Worker. Its ~2MB
+  WASM binary is self-hosted the same way and lazy-loaded the same way:
+  nothing pays for it unless `cimbarBackend` is actually used.
 
 ## API stability
 
 The public API is exactly what the package's root export (`import ... from
 'screenferry'`) exposes: `encodeToFrames`, `DisplayDriver`, `Scanner`,
-`Camera`, `StreamDecoder`, `ReceiverSession`, `IntegrityError`, `qrLtBackend`,
-and their associated option/type exports (including the `TransferBackend`
-interface, ahead of a pluggable v2 Cimbar backend). Internal modules
-(anything under `src/codec`, `src/backends`, `src/scan` in the source) are
-implementation details and can change in a minor or patch release.
-Versioning follows semver strictly from 1.0.0.
+`Camera`, `StreamDecoder`, `ReceiverSession`, `IntegrityError`,
+`qrLtBackend`, `cimbarBackend`, and their associated option/type exports
+(`TransferBackend`, `Frame`, `ImageFrame`, `CimbarEncodeOptions`, ...).
+Internal modules (anything under `src/codec`, `src/backends`, `src/scan` in
+the source) are implementation details and can change in a minor or patch
+release. Versioning follows semver strictly from 1.0.0.
 
 ## Non-goals
 

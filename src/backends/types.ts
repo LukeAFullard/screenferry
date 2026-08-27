@@ -1,10 +1,22 @@
 /**
- * A single unit of transmitted data. A QR/LT backend's frame is a string (a
- * UR part, meant to be rendered as a QR code); a future image-based backend
- * (e.g. Cimbar) could hand back raw pixel/image data instead — kept generic
- * here so the interface doesn't bake in "frames are always text."
+ * Raw pixel data for one rendered/captured frame — same layout as DOM
+ * `ImageData` (RGBA, row-major, opaque), but not typed against `ImageData`
+ * itself so this module stays usable somewhere without the DOM lib (a
+ * decode worker, a future non-browser host).
  */
-export type Frame = string | Uint8Array;
+export interface ImageFrame {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+/**
+ * A single unit of transmitted data. A QR/LT backend's frame is a string (a
+ * UR part, meant to be rendered as a QR code); an image-based backend (e.g.
+ * Cimbar) hands back rendered pixel data instead — kept generic here so the
+ * interface doesn't bake in "frames are always text."
+ */
+export type Frame = string | ImageFrame;
 
 /** Reassembles a stream of `Frame`s back into the original envelope bytes. */
 export interface BackendDecoder<F extends Frame = Frame> {

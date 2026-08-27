@@ -1,5 +1,6 @@
 import { Camera, type CameraOptions } from './camera';
 import type { DecodeWorkerRequest, DecodeWorkerResponse } from './decode-logic';
+import type { Frame } from '../backends/types';
 
 export interface ScannerOptions extends CameraOptions {
   /**
@@ -8,19 +9,30 @@ export interface ScannerOptions extends CameraOptions {
    * wasteful — default is roughly 2x the expected sender fps.
    */
   scanHz?: number;
+  /**
+   * When true, skips the built-in QR text-decode worker entirely and
+   * reports each captured camera frame's raw pixels via `onDecode` instead
+   * (as an `ImageFrame`) — for a backend (e.g. Cimbar) whose own decoder
+   * consumes pixels directly rather than pre-decoded text. Pair this with
+   * passing the matching `backend` to `StreamDecoder`/`ReceiverSession`;
+   * nothing checks that the two agree. Defaults to `false` (QR text decode,
+   * v1 behavior, unchanged).
+   */
+  rawFrames?: boolean;
 }
 
-type DecodeCallback = (text: string) => void;
+type DecodeCallback = (frame: Frame) => void;
 type Unsubscribe = () => void;
 
 const DEFAULT_SCAN_HZ = 20;
 
 /**
- * Camera-facing scanner: captures frames and reports decoded barcode text.
- * Deliberately knows nothing about fountain parts or transfer state — that's
- * `StreamDecoder`'s job (Stage 6) — so this stays testable without a camera
- * (worker protocol only) and swappable (e.g. screen-share frames instead of
- * a camera, later) without touching decode logic.
+ * Camera-facing scanner: captures frames and reports decoded content (QR
+ * text by default, or raw pixels in `rawFrames` mode). Deliberately knows
+ * nothing about fountain parts or transfer state — that's `StreamDecoder`'s
+ * job (Stage 6) — so this stays testable without a camera (worker protocol
+ * only) and swappable (e.g. screen-share frames instead of a camera, later)
+ * without touching decode logic.
  */
 export class Scanner {
   private camera: Camera | undefined;
@@ -41,6 +53,13 @@ export class Scanner {
     this.camera = new Camera(videoElement);
     await this.camera.start(opts);
 
+    const scanHz = opts?.scanHz ?? DEFAULT_SCAN_HZ;
+
+    if (opts?.rawFrames) {
+      this.intervalHandle = setInterval(() => this.tickRaw(), 1000 / scanHz);
+      return;
+    }
+
     this.worker = new Worker(new URL('./decode.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<DecodeWorkerResponse>) => {
       this.pendingDecode = false;
@@ -53,7 +72,6 @@ export class Scanner {
       }
     };
 
-    const scanHz = opts?.scanHz ?? DEFAULT_SCAN_HZ;
     this.intervalHandle = setInterval(() => this.tick(), 1000 / scanHz);
   }
 
@@ -81,6 +99,24 @@ export class Scanner {
     this.pendingDecode = true;
     const request: DecodeWorkerRequest = { id: this.nextRequestId++, imageData };
     this.worker.postMessage(request);
+  }
+
+  private tickRaw(): void {
+    if (!this.camera) return;
+
+    const imageData = this.camera.grabFrame();
+    if (!imageData) return;
+
+    const frame: Frame = {
+      data: new Uint8Array(
+        imageData.data.buffer,
+        imageData.data.byteOffset,
+        imageData.data.byteLength,
+      ),
+      width: imageData.width,
+      height: imageData.height,
+    };
+    for (const callback of this.callbacks) callback(frame);
   }
 }
 
