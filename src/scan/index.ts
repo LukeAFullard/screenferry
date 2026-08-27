@@ -47,6 +47,11 @@ export class Scanner {
     return () => this.callbacks.delete(callback);
   }
 
+  /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
+  get resolution(): { width: number; height: number } | undefined {
+    return this.camera?.resolution;
+  }
+
   async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
     this.stop();
 
