@@ -17,6 +17,30 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Fixed
 
+- `examples/app.html`'s Cimbar demo was unreadable by any real camera, and
+  the previous round's own fix/guidance for this made it worse in two
+  ways, found by reading libcimbar's actual C++ source (`GridConf.h`'s
+  `Conf8x8`) against this project's assumptions instead of guessing:
+  - The sender canvas/receiver video CSS (added last round to make them
+    resizable) forced them into a small box (~260-480px) regardless of
+    Cimbar's true 1024×1024 render, using `image-rendering: pixelated`
+    (nearest-neighbor) to scale it down. Harmless for QR's much lower
+    native resolution; for Cimbar it aliased/mangled the fine color grid
+    before a camera was ever involved — likely the dominant cause of "not
+    even starting to scan." Fixed: those elements now display at native
+    resolution by default (capped by actual viewport width, not the page's
+    narrow text column), with `image-rendering` back to the browser
+    default (smooth) instead of nearest-neighbor.
+  - The Cimbar tuning notes recommended *lowering* `frameSize` (e.g. to
+    512) as the fix for scan failures, reasoning it would produce "fewer,
+    larger cells." That's wrong: libcimbar's mode B grid is a fixed
+    112×112 cells regardless of `frameSize` — lowering it renders that
+    same grid into fewer physical pixels, which can only hurt real-camera
+    legibility. Corrected in both `examples/app.html` and the README;
+    raising `frameSize` above the 1024 default (hardware permitting) is
+    the direction that could actually help, not lowering it.
+  Still open: real-device confirmation that a real camera now actually
+  decodes real Cimbar frames end to end (see the README's Cimbar section).
 - GitHub Pages (serving `main` with no build step) couldn't run
   `examples/*.html` at all — they import `../dist/index.js`, and `dist/`
   was gitignored, so that import 404'd and every demo page's script

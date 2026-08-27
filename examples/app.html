@@ -20,31 +20,31 @@
         margin-top: 0;
       }
       canvas {
+        /* Deliberately NOT forcing a small display width/height: `width`/
+           `height` stay `auto` so the canvas shows at its native
+           backing-store resolution (the actual encoded pixels) instead of
+           being scaled down by the browser. This matters a lot for Cimbar:
+           its 1024x1024 render downscaled into a small CSS box gets visibly
+           mangled (nearest-neighbor `image-rendering: pixelated`, previously
+           set here, made this actively worse by aliasing the fine color
+           grid rather than smoothing it) -- QR's much smaller native
+           renders were never affected either way. `max-width` is capped by
+           viewport width, not the page's narrow ~720px text column, so a
+           desktop window can actually show Cimbar close to native size. */
         border: 1px solid #ccc;
-        image-rendering: pixelated;
-        width: min(90vw, 480px);
-        height: min(90vw, 480px);
-        max-width: 100%;
+        width: auto;
+        height: auto;
+        max-width: min(100%, 95vw);
         background: #fff;
         resize: both;
         overflow: hidden;
       }
-      #self-test-camera-canvas {
-        /* Mirrors whatever size the sender canvas is currently rendering at
-           (see startMirroring below) -- fixed square dimensions here would
-           just get overridden as soon as a frame arrives, and left stale
-           in between (e.g. right after switching backend/frameSize). */
-        width: auto;
-        height: auto;
-        max-width: 100%;
-        resize: none;
-      }
       video {
         display: block;
         border: 1px solid #ccc;
-        width: min(90vw, 480px);
-        height: min(70vw, 360px);
-        max-width: 100%;
+        width: auto;
+        height: auto;
+        max-width: min(100%, 95vw);
         background: #000;
         resize: both;
         overflow: hidden;
@@ -123,7 +123,7 @@
           id="tune-cimbar-frame-size"
           placeholder="1024"
           min="64"
-          max="1024"
+          max="2048"
           step="64"
           style="width: 5em"
       /></label>
@@ -172,9 +172,10 @@
         <button id="live-send-stop">Stop</button>
       </p>
       <p>
-        Drag the canvas's bottom-right corner to resize it. For Cimbar, displaying it as large as
-        your screen allows (and holding the receiving camera close) gives the scanner far more
-        pixels per cell to work with.
+        The canvas below now displays at its native resolution (drag its bottom-right corner to
+        resize further). For Cimbar specifically, avoid shrinking it — its 1024×1024 render
+        downscaled into a small box gets visibly mangled, not just smaller; hold the receiving
+        camera close instead if you want the code to fill more of its view.
       </p>
       <canvas id="live-send-canvas"></canvas>
       <pre id="live-send-status">idle</pre>
@@ -236,17 +237,18 @@
       </p>
       <h3>Cimbar-specific notes</h3>
       <p>
-        Cimbar packs far more information per unit area than QR (a fine 8x8-cell grid across the
-        whole frame, vs. QR's much larger, sparser modules), so it's far more sensitive to two
-        things QR mostly tolerates:
+        Cimbar packs far more information per unit area than QR (a fixed 112×112-cell grid across
+        the whole frame at every <code>frameSize</code>, vs. QR's much larger, sparser modules), so
+        it's far more sensitive to things QR mostly tolerates:
       </p>
       <ul>
         <li>
-          <strong>On-screen code size.</strong> If the sending canvas is displayed small, every
-          Cimbar cell is proportionally tiny too — a QR code can still be read shrunk down, but
-          Cimbar's finer cells become unresolvable well before that. Display the sender canvas as
-          large as the screen allows (resize it — see section 2) and hold the receiving camera close
-          enough that the code fills a good fraction of the frame.
+          <strong>On-screen code size.</strong> The sender canvas below now displays at its native
+          resolution instead of being squashed into a small box — that squashing was previously
+          forcing an ugly, aliased downscale of Cimbar's fine grid (nearest-neighbor scaling of a
+          1024×1024 render into a few hundred CSS pixels), which likely made frames flatly
+          unreadable regardless of the camera. Resize it further if useful (see section 2), and hold
+          the receiving camera close enough that the code fills a good fraction of the frame.
         </li>
         <li>
           <strong>Camera capture resolution.</strong> Without an explicit constraint, browsers often
@@ -256,12 +258,16 @@
           starts, so you can tell whether the camera is genuinely giving you low resolution vs. the
           code just being displayed too small.
         </li>
+        <li>
+          <strong><code>frameSize</code> is a resolution knob, not a density knob.</strong> Cimbar's
+          mode B grid is always 112×112 cells no matter what <code>frameSize</code> you pick —
+          shrinking it to e.g. 512 does <em>not</em> produce fewer, bigger, easier-to-scan cells; it
+          renders the exact same 112×112 grid into fewer physical pixels, giving the camera
+          <em>less</em> to work with per cell. If anything, try raising it above the 1024 default
+          (device performance permitting) rather than lowering it, and lean on a larger on-screen
+          display size / closer camera distance as the main reliability lever instead.
+        </li>
       </ul>
-      <p>
-        If it's still not scanning: try a lower <code>frameSize</code> (e.g. 512) first — fewer,
-        larger cells are much more forgiving of camera resolution and focus than the 1024 default,
-        at the cost of needing more frames to send the same payload.
-      </p>
     </section>
 
     <script type="module">

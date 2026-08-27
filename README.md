@@ -162,22 +162,39 @@ frames for denser color-based ones.
   `frameSize` as a live control specifically so you can find a resolution
   that performs acceptably on your own device.
 - **Real-camera scanning needs more pixels per cell than QR does.** Cimbar's
-  8x8-cell grid is far denser than QR's modules, so it's much more sensitive
-  to two things that barely affect QR: the on-screen size of the displayed
-  code (shrink it in CSS/layout and every cell shrinks with it) and the
-  camera's actual capture resolution. Browsers commonly negotiate a low
-  resolution (e.g. 640x480) when `getUserMedia` doesn't ask for anything
-  specific — plenty for QR, not for Cimbar. `Camera`/`Scanner` now request
-  1920x1080 as an `ideal` `MediaTrackConstraint` by default (overridable via
-  `CameraOptions.width`/`height`; still just a request, the browser can fall
-  back lower), and both expose a `resolution` getter (also mirrored on
-  `ReceiverSession`/`NegotiatingReceiverSession`) so you can check what was
-  actually negotiated. `examples/app.html` displays it live during scanning,
-  and its Cimbar tuning notes cover the on-screen-size side (the video/canvas
-  elements there are resizable — drag their corner — specifically so you can
-  size them generously instead of a small fixed box). This is a real,
-  identified failure mode, not a hypothetical — but real-device confirmation
-  that it's the *only* one is still open (see the performance caveat below).
+  grid (112×112 cells at every `frameSize` — see below) is far denser than
+  QR's modules, so it's much more sensitive to things that barely affect QR:
+  - The camera's actual capture resolution. Browsers commonly negotiate a
+    low resolution (e.g. 640x480) when `getUserMedia` doesn't ask for
+    anything specific — plenty for QR, not for Cimbar. `Camera`/`Scanner`
+    now request 1920x1080 as an `ideal` `MediaTrackConstraint` by default
+    (overridable via `CameraOptions.width`/`height`; still just a request,
+    the browser can fall back lower), and both expose a `resolution` getter
+    (also mirrored on `ReceiverSession`/`NegotiatingReceiverSession`) —
+    `examples/app.html` displays it live during scanning.
+  - The on-screen size of the *displayed* code — shrink it in CSS/layout
+    and every cell shrinks with it. `examples/app.html` previously forced
+    the sender canvas into a small (~260-480px) box regardless of its true
+    1024×1024 resolution, using `image-rendering: pixelated` (nearest-
+    neighbor) to scale it down — for QR's much lower native resolution that
+    was harmless, but for Cimbar it meant every real-camera test was
+    scanning an already visibly aliased/mangled downscale of the code,
+    before the camera was even involved. Fixed: the canvas/video elements
+    there now display at their native resolution by default (only capped by
+    actual viewport width, not the page's narrow text column), and are
+    still resizable if you want to adjust further.
+  - **`frameSize` is a resolution knob, not a cell-density knob** — mode
+    B's grid is fixed at 112×112 cells regardless of `frameSize`, so
+    lowering it (e.g. to 512) does not yield fewer, bigger, easier cells;
+    it renders that same 112×112 grid into fewer physical pixels, which
+    only *hurts* real-camera legibility. If tuning it at all, raising it
+    above the 1024 default (hardware permitting) is the direction that
+    could help, not lowering it.
+
+  These were real, identified bugs/misconceptions in this project's own
+  test harness and docs, not hypotheticals — but real-device confirmation
+  that a real camera now actually scans real Cimbar frames end to end is
+  still open (see the performance caveat below).
 - **More sensitive to camera/screen color accuracy** than QR's
   black-and-white frames — screen color calibration, camera white balance,
   and ambient lighting all matter more here.
@@ -206,6 +223,15 @@ via `encodeToFrames`'s `backendOptions`:
 mode) — `backendOptions` is forwarded to `backend.encode()` as-is, in
 place of `{ maxFragmentLength }`; `qrLtBackend` doesn't understand it, so
 this only matters when a `backend`/`preferredBackend` is also set.
+
+**Lowering `frameSize` trades performance for scan reliability, not the
+other way round.** Mode B's grid is always 112×112 cells regardless of
+`frameSize` (confirmed against libcimbar's own `Conf8x8` config — see
+`src/lib/cimb_translator/GridConf.h`), so a smaller `frameSize` renders
+that same fixed grid into fewer physical pixels: faster to encode/decode,
+but *less* forgiving for a real camera to resolve, not more. Raising it
+above 1024 (hardware permitting) is the direction that could actually help
+real-camera reliability.
 
 **Frame shape differs.** `Frame` for this backend is rendered pixel data
 (`ImageFrame: { data, width, height }`), not a string. `DisplayDriver`
