@@ -40,6 +40,7 @@ export class Scanner {
   private intervalHandle: ReturnType<typeof setInterval> | undefined;
   private nextRequestId = 0;
   private pendingDecode = false;
+  private pendingRawFrame = false;
   private readonly callbacks = new Set<DecodeCallback>();
 
   onDecode(callback: DecodeCallback): Unsubscribe {
@@ -93,6 +94,7 @@ export class Scanner {
     this.camera = undefined;
 
     this.pendingDecode = false;
+    this.pendingRawFrame = false;
   }
 
   private tick(): void {
@@ -107,21 +109,26 @@ export class Scanner {
   }
 
   private tickRaw(): void {
-    if (!this.camera) return;
+    // `grabNativeFrame` is async (unlike `grabFrame`) -- guards re-entrancy
+    // the same way `tick`/`pendingDecode` does, so a slow capture (or a
+    // scanHz higher than the capture path can keep up with) can't pile up
+    // overlapping calls.
+    if (this.pendingRawFrame || !this.camera) return;
+    const camera = this.camera;
 
-    const imageData = this.camera.grabFrame();
-    if (!imageData) return;
-
-    const frame: Frame = {
-      data: new Uint8Array(
-        imageData.data.buffer,
-        imageData.data.byteOffset,
-        imageData.data.byteLength,
-      ),
-      width: imageData.width,
-      height: imageData.height,
-    };
-    for (const callback of this.callbacks) callback(frame);
+    this.pendingRawFrame = true;
+    void camera
+      .grabNativeFrame()
+      .then((frame) => {
+        if (!frame) return;
+        for (const callback of this.callbacks) callback(frame);
+      })
+      .catch((err: unknown) => {
+        console.warn('[screenferry] raw frame capture failed:', err);
+      })
+      .finally(() => {
+        this.pendingRawFrame = false;
+      });
   }
 }
 

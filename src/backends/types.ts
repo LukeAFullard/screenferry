@@ -8,6 +8,14 @@ export interface ImageFrame {
   data: Uint8Array;
   width: number;
   height: number;
+  /**
+   * Pixel layout `data` is in. Defaults to `'rgba'` when omitted — every
+   * producer except `Camera.grabNativeFrame`'s WebCodecs path (this
+   * project's own encoders, `DisplayDriver`'s canvas-based sender path,
+   * `Camera.grabFrame`'s canvas/`getImageData` fallback) always emits RGBA,
+   * so only that one native-capture path needs to set this explicitly.
+   */
+  format?: 'rgba' | 'nv12' | 'i420';
 }
 
 /**

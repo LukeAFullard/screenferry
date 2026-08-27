@@ -20,9 +20,16 @@ export declare class Camera {
     private readonly canvas;
     private readonly ctx;
     private stream;
+    private frameReader;
     constructor(videoElement?: HTMLVideoElement);
     private static createHiddenVideoElement;
     start(opts?: CameraOptions): Promise<HTMLVideoElement>;
+    /**
+     * Best-effort setup for `grabNativeFrame`'s WebCodecs path — silently
+     * leaves `frameReader` unset (rather than throwing) on any unsupported
+     * browser, so callers always have the canvas/RGBA fallback available.
+     */
+    private setupNativeFrameReader;
     /** Actual negotiated capture resolution, e.g. for diagnosing a low-resolution fallback. `undefined` before the stream has produced its first frame. */
     get resolution(): {
         width: number;
@@ -31,6 +38,43 @@ export declare class Camera {
     stop(): void;
     /** Draws the current video frame to an offscreen canvas and returns it as `ImageData`. */
     grabFrame(): ImageData | undefined;
+    /**
+     * Captures one frame preferring the camera's *native* pixel format
+     * (NV12/I420) straight off a `MediaStreamTrackProcessor`-backed
+     * `VideoFrame`, skipping `grabFrame`'s video → `<canvas>` 2D `drawImage`
+     * → `getImageData` RGBA round trip entirely — an unnecessary
+     * color-processing hop for a format like Cimbar's that only needs 2 bits
+     * of color per cell. Falls back to `grabFrame`'s canvas/RGBA path when
+     * the native path is unavailable (unsupported browser) or the captured
+     * `VideoFrame`'s format isn't one `cimbarBackend` recognizes.
+     *
+     * Unlike `grabFrame`, this is `async`: reading a `VideoFrame`'s pixel
+     * planes (`copyTo`) is inherently asynchronous, and `frameReader` is a
+     * push-model `ReadableStream` reader, not a "give me whatever's on
+     * screen right now" pull like `<video>` + `drawImage`.
+     */
+    grabNativeFrame(): Promise<ImageFrame | undefined>;
+    /**
+     * `frameReader.read()` resolves with the *next queued* frame, not "the
+     * current one" -- if frames are produced faster than `grabNativeFrame`
+     * is called (e.g. a 30fps camera sampled at a lower `scanHz`), a naive
+     * single `read()` per call falls further and further behind real time.
+     * Waits for at least one frame (so this still blocks like `grabFrame`
+     * conceptually does), then drains any additional frames already sitting
+     * in the queue -- bounded by racing each further `read()` against an
+     * immediately-scheduled timer, so a queue that's caught up (no backlog)
+     * doesn't block waiting on the *next* camera frame to arrive.
+     */
+    private readLatestVideoFrame;
+    /**
+     * `format = 12` (NV12) / `format = 420` (I420) match the pixel-format
+     * codes `_cimbard_scan_extract_decode` expects for those layouts (see
+     * `module.ts`'s `PIXEL_FORMAT_*` constants) -- any other native
+     * `VideoFrame.format` (e.g. `'RGBA'`/`'BGRA'` from a browser/camera combo
+     * that doesn't expose YUV) returns `undefined` so the caller falls back
+     * to the canvas/RGBA path instead of guessing at an unsupported layout.
+     */
+    private videoFrameToImageFrame;
 }
 
 export declare interface CameraOptions {
@@ -81,6 +125,15 @@ export declare const cimbarBackend: TransferBackend<ImageFrame>;
 export declare interface CimbarEncodeOptions {
     /** Encode/render resolution (square). Defaults to `DEFAULT_FRAME_SIZE`. */
     frameSize?: number;
+    /**
+     * libcimbar encode mode (`_cimbare_configure`'s first argument). Defaults
+     * to `DEFAULT_MODE` (`68`, "mode B") — unchanged from before this field
+     * existed. Set to `67` ("Bm") to trade ~30% throughput for the broader
+     * camera compatibility it's documented upstream as built for; the
+     * receiving `CimbarDecoder` doesn't need to be told which mode was used —
+     * it cycles through candidates per frame until one decodes.
+     */
+    mode?: number;
 }
 
 declare type DecodeCallback = (frame: Frame) => void;
@@ -178,6 +231,14 @@ export declare interface ImageFrame {
     data: Uint8Array;
     width: number;
     height: number;
+    /**
+     * Pixel layout `data` is in. Defaults to `'rgba'` when omitted — every
+     * producer except `Camera.grabNativeFrame`'s WebCodecs path (this
+     * project's own encoders, `DisplayDriver`'s canvas-based sender path,
+     * `Camera.grabFrame`'s canvas/`getImageData` fallback) always emits RGBA,
+     * so only that one native-capture path needs to set this explicitly.
+     */
+    format?: 'rgba' | 'nv12' | 'i420';
 }
 
 /** Thrown when a fully-reassembled transfer fails its SHA-256 integrity check. */
@@ -376,6 +437,7 @@ export declare class Scanner {
     private intervalHandle;
     private nextRequestId;
     private pendingDecode;
+    private pendingRawFrame;
     private readonly callbacks;
     onDecode(callback: DecodeCallback): Unsubscribe;
     /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
@@ -450,4 +512,22 @@ export { }
 
 declare global {
     var Module: CimbarModuleConfig | undefined;
+}
+
+
+declare global {
+    /**
+     * Part of the "Insertable Streams for MediaStreamTrack" API — not yet in
+     * TS's own DOM lib (unlike `VideoFrame`/`VideoPixelFormat`, which are).
+     * Minimal ambient shape for what `Camera.grabNativeFrame` uses: wrapping
+     * a live camera track's `MediaStreamVideoTrack` as a `ReadableStream` of
+     * `VideoFrame`s in the browser's *native* capture format (NV12/I420 on
+     * most platforms), with no canvas/RGBA conversion in between.
+     */
+    class MediaStreamTrackProcessor<T = VideoFrame> {
+        constructor(init: {
+            track: MediaStreamTrack;
+        });
+        readonly readable: ReadableStream<T>;
+    }
 }

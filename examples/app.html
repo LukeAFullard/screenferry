@@ -94,6 +94,22 @@
         <option value="cimbar">cimbar (opt-in — see README's Cimbar section)</option>
         <option value="auto">auto (negotiated)</option>
       </select>
+      <label>
+        <input type="checkbox" id="pin-cimbar" />
+        pin cimbar (skip negotiation — for testing)
+      </label>
+    </p>
+    <p>
+      <small>
+        When checked and backend is <code>cimbar</code>, every section below uses the pinned,
+        non-negotiated path (<code>encodeToFrames(file, { backend: cimbarBackend })</code> /
+        <code>new ReceiverSession(callbacks, cimbarBackend).start(video, { rawFrames: true })</code
+        >) instead of <code>preferredBackend</code> + <code>NegotiatingReceiverSession</code>. This
+        removes <code>NegotiatingReceiverSession.switchToRawFrames()</code>'s camera stop/restart
+        handoff as a variable — a handoff this project's own docs note is un-exercised against real
+        camera hardware. If cimbar works pinned but not negotiated, the bug is in that handoff, not
+        the cimbar codec itself.
+      </small>
     </p>
 
     <p>
@@ -271,10 +287,22 @@
     </section>
 
     <script type="module">
-      import { encodeToFrames, DisplayDriver, NegotiatingReceiverSession } from '../dist/index.js';
+      import {
+        encodeToFrames,
+        DisplayDriver,
+        NegotiatingReceiverSession,
+        ReceiverSession,
+        cimbarBackend,
+      } from '../dist/index.js';
 
       function selectedBackend() {
         return document.getElementById('backend').value;
+      }
+
+      // Fix 5: pin cimbar (skip the header-frame negotiation + `NegotiatingReceiverSession`'s
+      // camera stop/restart handoff) so testing cimbar doesn't also depend on that handoff.
+      function pinned(backend) {
+        return backend === 'cimbar' && document.getElementById('pin-cimbar').checked;
       }
 
       function tuning() {
@@ -326,6 +354,7 @@
           progress.value = 0;
 
           const backend = selectedBackend();
+          const isPinned = pinned(backend);
           const file =
             document.getElementById('self-test-file').files?.[0] ?? defaultSampleFile(backend);
 
@@ -342,11 +371,10 @@
           startMirroring();
 
           const { fps, fragmentSize, scanHz, backendOptions } = tuning();
-          const senderDriver = new DisplayDriver(
-            encodeToFrames(file, { preferredBackend: backend, fragmentSize, backendOptions }),
-            senderCanvas,
-            { fps },
-          );
+          const senderFrames = isPinned
+            ? encodeToFrames(file, { backend: cimbarBackend, fragmentSize, backendOptions })
+            : encodeToFrames(file, { preferredBackend: backend, fragmentSize, backendOptions });
+          const senderDriver = new DisplayDriver(senderFrames, senderCanvas, { fps });
           senderDriver.start();
 
           function cleanup() {
@@ -355,7 +383,7 @@
             navigator.mediaDevices.getUserMedia = originalGetUserMedia;
           }
 
-          const session = new NegotiatingReceiverSession({
+          const callbacks = {
             onBackendResolved: (id) => {
               status.textContent = `sender announced backend: ${id}`;
             },
@@ -377,11 +405,14 @@
               status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
               cleanup();
             },
-          });
+          };
+          const session = isPinned
+            ? new ReceiverSession(callbacks, cimbarBackend)
+            : new NegotiatingReceiverSession(callbacks);
 
           try {
-            await session.start(undefined, { scanHz });
-            status.textContent = `sending + receiving "${file.name}" via ${backend}...`;
+            await session.start(undefined, isPinned ? { scanHz, rawFrames: true } : { scanHz });
+            status.textContent = `sending + receiving "${file.name}" via ${backend}${isPinned ? ' (pinned)' : ''}...`;
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;
             cleanup();
@@ -399,23 +430,22 @@
           driver?.stop();
 
           const backend = selectedBackend();
+          const isPinned = pinned(backend);
           const file =
             document.getElementById('live-send-file').files?.[0] ?? defaultSampleFile(backend);
           const { fps, fragmentSize, backendOptions } = tuning();
-          const frames = encodeToFrames(file, {
-            preferredBackend: backend,
-            fragmentSize,
-            backendOptions,
-          });
+          const frames = isPinned
+            ? encodeToFrames(file, { backend: cimbarBackend, fragmentSize, backendOptions })
+            : encodeToFrames(file, { preferredBackend: backend, fragmentSize, backendOptions });
 
           driver = new DisplayDriver(frames, canvas, {
             fps,
             onFrameSent: (index) => {
-              status.textContent = `sending "${file.name}" via ${backend} — frame ${index + 1}`;
+              status.textContent = `sending "${file.name}" via ${backend}${isPinned ? ' (pinned)' : ''} — frame ${index + 1}`;
             },
           });
           driver.start();
-          status.textContent = `starting "${file.name}" via ${backend}...`;
+          status.textContent = `starting "${file.name}" via ${backend}${isPinned ? ' (pinned)' : ''}...`;
         });
 
         document.getElementById('live-send-stop').addEventListener('click', () => {
@@ -449,35 +479,49 @@
           resolutionEl.textContent = '';
         }
 
-        const session = new NegotiatingReceiverSession({
-          onBackendResolved: (id) => {
-            status.textContent = `sender is using: ${id}`;
-          },
-          onProgress: (p) => {
-            progress.value = p;
-            status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)`;
-          },
-          onComplete: (file) => {
-            status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type})`;
+        // Built fresh per "Start scanning" click (not once at load) so the
+        // pin-cimbar checkbox's state at click time decides which path is
+        // used: the negotiated `NegotiatingReceiverSession`, or (Fix 5) the
+        // pinned `ReceiverSession(callbacks, cimbarBackend)` +
+        // `{ rawFrames: true }` path that skips negotiation's camera
+        // stop/restart handoff entirely.
+        let session;
+        function createSession(isPinned) {
+          const callbacks = {
+            onBackendResolved: (id) => {
+              status.textContent = `sender is using: ${id}`;
+            },
+            onProgress: (p) => {
+              progress.value = p;
+              status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)`;
+            },
+            onComplete: (file) => {
+              status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type})`;
 
-            const url = URL.createObjectURL(file);
-            downloadLink.href = url;
-            downloadLink.download = file.name;
-            downloadLink.textContent = `Download ${file.name}`;
-            downloadLink.style.display = 'inline';
-          },
-          onError: (err) => {
-            status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
-          },
-        });
+              const url = URL.createObjectURL(file);
+              downloadLink.href = url;
+              downloadLink.download = file.name;
+              downloadLink.textContent = `Download ${file.name}`;
+              downloadLink.style.display = 'inline';
+            },
+            onError: (err) => {
+              status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
+            },
+          };
+          return isPinned
+            ? new ReceiverSession(callbacks, cimbarBackend)
+            : new NegotiatingReceiverSession(callbacks);
+        }
 
         document.getElementById('live-recv-start').addEventListener('click', async () => {
           downloadLink.style.display = 'none';
           status.textContent = 'requesting camera...';
+          const isPinned = pinned(selectedBackend());
+          session = createSession(isPinned);
           try {
             const { scanHz } = tuning();
-            await session.start(video, { scanHz });
-            status.textContent = 'scanning...';
+            await session.start(video, isPinned ? { scanHz, rawFrames: true } : { scanHz });
+            status.textContent = `scanning...${isPinned ? ' (pinned)' : ''}`;
             pollResolution();
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;
@@ -485,7 +529,7 @@
         });
 
         document.getElementById('live-recv-stop').addEventListener('click', () => {
-          session.stop();
+          session?.stop();
           status.textContent = 'stopped';
           stopPollingResolution();
         });
