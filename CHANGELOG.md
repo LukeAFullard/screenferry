@@ -15,6 +15,16 @@ Also includes Stage 9's codec abstraction refactor, Stage 10's Cimbar
 backend integration, and Stage 11's backend negotiation (all v2), landed
 ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
+### Fixed
+
+- GitHub Pages (serving `main` with no build step) couldn't run
+  `examples/*.html` at all — they import `../dist/index.js`, and `dist/`
+  was gitignored, so that import 404'd and every demo page's script
+  silently failed to load. `dist/` (excluding sourcemaps) is now
+  committed for this reason specifically; see the README's Manual testing
+  section for the resulting "rebuild before committing" discipline this
+  creates.
+
 ### Changed
 
 - Introduced a `TransferBackend` interface (`src/backends/types.ts`)
