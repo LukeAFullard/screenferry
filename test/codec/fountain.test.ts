@@ -1,16 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFountainEncoder, FountainDecoder } from '../../src/codec/fountain';
-
-/** Deterministic pseudo-random bytes so tests are reproducible across runs. */
-function pseudoRandomBytes(length: number, seed = 1): Uint8Array {
-  const bytes = new Uint8Array(length);
-  let state = seed >>> 0;
-  for (let i = 0; i < length; i++) {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    bytes[i] = (state >>> 24) & 0xff; // high bits: LCG low bits are weakly random
-  }
-  return bytes;
-}
+import { bytesEqual, pseudoRandomBytes } from '../helpers/bytes';
 
 /** Pulls `count` parts from the (infinite) fountain part stream. */
 async function takeParts(source: AsyncIterable<string>, count: number): Promise<string[]> {
@@ -53,7 +43,7 @@ describe('fountain codec', () => {
     }
 
     expect(decoder.isComplete()).toBe(true);
-    expect(decoder.getResult()).toEqual(original);
+    expect(bytesEqual(decoder.getResult(), original)).toBe(true);
   }, 20_000);
 
   it('completes when parts arrive out of order', async () => {

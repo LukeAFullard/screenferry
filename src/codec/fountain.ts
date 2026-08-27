@@ -1,16 +1,15 @@
+// Must be imported before `@ngraveio/bc-ur` — see src/env/polyfills.ts for why.
+import '../env/polyfills';
 import { UR, UREncoder, URDecoder } from '@ngraveio/bc-ur';
 
-// bc-ur reads/writes the Node `Buffer` global internally. That's fine under
-// Vitest's Node test environment, but a browser bundle needs a `Buffer`
-// polyfill on `globalThis` — deferred to Stage 4, where this module is
-// first wired into browser-facing code.
-
 /**
- * Fragment length (bytes) used when the caller doesn't specify one. Chosen
- * as a conservative starting point for QR payload capacity; tuned
- * empirically once Stage 3 measures real QR capacity vs. camera reliability.
+ * Fragment length (bytes) used when the caller doesn't specify one.
+ * Empirically measured by `npm run qr:capacity` (see `scripts/qr-capacity.mjs`)
+ * as the largest fragment whose rendered UR part still fits QR version <= 20
+ * at ECC L — Stage 3's chosen ceiling for reliable camera-scan density.
+ * Given a small safety margin below the measured 595-byte cutoff.
  */
-const DEFAULT_MAX_FRAGMENT_LENGTH = 150;
+const DEFAULT_MAX_FRAGMENT_LENGTH = 580;
 
 /**
  * Drives a Luby Transform fountain encoder over `bytes`, yielding UR-encoded

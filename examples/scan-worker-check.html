@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>screenferry — scan worker check</title>
+  </head>
+  <body>
+    <p>
+      Manual smoke test for Stage 5 (scan &amp; decode layer). Animates real QR frames onto a
+      canvas, captures that canvas as a fake camera stream, and runs the full public
+      <code>Scanner</code> API against it — camera capture, worker dispatch, self-hosted zxing-wasm
+      decode with jsQR fallback, all exercised without real hardware.
+    </p>
+    <canvas id="source-canvas" width="400" height="400"></canvas>
+    <pre id="status">idle</pre>
+    <script type="module">
+      import { encodeToFrames, DisplayDriver, Scanner } from '../dist/index.js';
+
+      const sourceCanvas = document.getElementById('source-canvas');
+      const status = document.getElementById('status');
+
+      // Fake camera: capture a MediaStream directly from the canvas we're
+      // animating QR frames onto, and hand it back from getUserMedia instead
+      // of prompting for a real camera. Exercises the full public Scanner
+      // API (camera -> worker -> decode) without real hardware.
+      const fakeStream = sourceCanvas.captureStream(15);
+      navigator.mediaDevices.getUserMedia = async () => fakeStream;
+
+      const text = 'screenferry scan-worker check payload '.repeat(3);
+      const file = new File([text], 'check.txt', { type: 'text/plain' });
+      const frames = encodeToFrames(file, { fragmentSize: 200 });
+      const senderDriver = new DisplayDriver(frames, sourceCanvas, { fps: 8 });
+      senderDriver.start();
+
+      const scanner = new Scanner();
+      const decoded = [];
+      scanner.onDecode((text) => {
+        decoded.push(text);
+        window.__decodedCount = decoded.length;
+        window.__lastDecoded = text;
+        status.textContent = `decoded ${decoded.length} parts — last: ${text.slice(0, 60)}`;
+      });
+
+      window.__startScanner = async () => {
+        await scanner.start(undefined, { scanHz: 10 });
+        status.textContent = 'scanner started';
+      };
+      window.__stopAll = () => {
+        scanner.stop();
+        senderDriver.stop();
+      };
+    </script>
+  </body>
+</html>

@@ -7,16 +7,7 @@ import {
   unwrapEnvelope,
 } from '../../src/codec/transfer';
 import { decodeEnvelope } from '../../src/codec/envelope';
-
-function pseudoRandomBytes(length: number, seed = 1): Uint8Array {
-  const bytes = new Uint8Array(length);
-  let state = seed >>> 0;
-  for (let i = 0; i < length; i++) {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    bytes[i] = (state >>> 24) & 0xff; // high bits: LCG low bits are weakly random
-  }
-  return bytes;
-}
+import { pseudoRandomBytes } from '../helpers/bytes';
 
 async function decodeFully(
   bytes: Uint8Array,
