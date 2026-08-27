@@ -8,8 +8,8 @@
 // test/e2e/README.md for what this does and doesn't cover.
 import jsQR from 'jsqr';
 import { encodeToFrames, StreamDecoder } from '../../src/index';
-import { computeQrModules, type EccLevel } from '../../src/qr/encode';
-import { rasterizeQrModules } from '../../src/qr/raster';
+import { computeQrModules, type EccLevel } from '../../src/backends/qr-lt/encode';
+import { rasterizeQrModules } from '../../src/backends/qr-lt/raster';
 import { createSeededRandom } from '../helpers/random';
 
 export interface FaultConfig {

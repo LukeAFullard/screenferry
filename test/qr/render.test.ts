@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import jsQR from 'jsqr';
-import { computeQrModules } from '../../src/qr/encode';
-import { rasterizeQrModules } from '../../src/qr/raster';
-import { createFountainEncoder, FountainDecoder } from '../../src/codec/fountain';
+import { computeQrModules } from '../../src/backends/qr-lt/encode';
+import { rasterizeQrModules } from '../../src/backends/qr-lt/raster';
+import { createFountainEncoder, FountainDecoder } from '../../src/backends/qr-lt/fountain';
 
 function decodeModulesWithJsQr(modules: boolean[][]): string | null {
   const { data, width, height } = rasterizeQrModules(modules);

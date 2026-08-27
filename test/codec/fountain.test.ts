@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createFountainEncoder, FountainDecoder } from '../../src/codec/fountain';
+import { createFountainEncoder, FountainDecoder } from '../../src/backends/qr-lt/fountain';
 import { bytesEqual, pseudoRandomBytes } from '../helpers/bytes';
 
 /** Pulls `count` parts from the (infinite) fountain part stream. */

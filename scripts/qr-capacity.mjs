@@ -2,7 +2,7 @@
 // rendered UR part string still fits a QR code at version <= 20, ECC L.
 // Re-run this (`npm run qr:capacity`) whenever the ECC level, max version,
 // or the UR encoding scheme changes, and feed the printed number back into
-// src/codec/fountain.ts's DEFAULT_MAX_FRAGMENT_LENGTH.
+// src/backends/qr-lt/fountain.ts's DEFAULT_MAX_FRAGMENT_LENGTH.
 import { UR, UREncoder } from '@ngraveio/bc-ur';
 import { encode as uqrEncode } from 'uqr';
 
@@ -60,4 +60,4 @@ console.log(`ECC level: ${ECC_LEVEL}, max QR version: ${MAX_VERSION}`);
 console.log(
   `Largest fragment length that fits: ${bestFragmentLength} bytes (QR version ${bestVersion})`,
 );
-console.log('Feed this into src/codec/fountain.ts DEFAULT_MAX_FRAGMENT_LENGTH.');
+console.log('Feed this into src/backends/qr-lt/fountain.ts DEFAULT_MAX_FRAGMENT_LENGTH.');

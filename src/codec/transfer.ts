@@ -1,8 +1,9 @@
 import { compress, decompress } from './compression';
 import { decodeEnvelope, encodeEnvelope } from './envelope';
 import { IntegrityError } from './errors';
-import { createFountainEncoder, FountainDecoder } from './fountain';
 import { sha256Hex } from './hash';
+import { qrLtBackend } from '../backends/qr-lt';
+import type { BackendDecoder, TransferBackend } from '../backends/types';
 
 export interface FileMeta {
   filename: string;
@@ -37,37 +38,48 @@ export async function buildEnvelope(bytes: Uint8Array, meta: FileMeta): Promise<
   );
 }
 
-/** Envelopes `bytes` and returns an infinite stream of fountain-encoded UR parts. */
+/**
+ * Envelopes `bytes` and returns an infinite stream of backend-encoded frames
+ * — UR part strings for the default `qr-lt` backend. `opts.backend` lets a
+ * caller select a different `TransferBackend`; omitting it preserves v1
+ * behavior exactly.
+ */
 export async function encodeFileToParts(
   bytes: Uint8Array,
   meta: FileMeta,
-  opts?: { maxFragmentLength?: number },
+  opts?: { maxFragmentLength?: number; backend?: TransferBackend<string> },
 ): Promise<AsyncIterable<string>> {
   const envelope = await buildEnvelope(bytes, meta);
-  return createFountainEncoder(envelope, opts);
+  const backend = opts?.backend ?? qrLtBackend;
+  return backend.encode(envelope, { maxFragmentLength: opts?.maxFragmentLength });
 }
 
 /**
- * Reassembles fountain-encoded parts back into the original file, verifying
- * integrity against the envelope's stored SHA-256 hash.
+ * Reassembles backend-encoded frames back into the original file, verifying
+ * integrity against the envelope's stored SHA-256 hash. Defaults to the
+ * `qr-lt` backend (Luby Transform fountain codes over UR part strings).
  */
 export class TransferDecoder {
-  private readonly fountainDecoder = new FountainDecoder();
+  private readonly decoder: BackendDecoder<string>;
+
+  constructor(backend: TransferBackend<string> = qrLtBackend) {
+    this.decoder = backend.createDecoder();
+  }
 
   receivePart(part: string): void {
-    this.fountainDecoder.receivePart(part);
+    this.decoder.addFrame(part);
   }
 
   isComplete(): boolean {
-    return this.fountainDecoder.isComplete();
+    return this.decoder.isComplete;
   }
 
   get progress(): number {
-    return this.fountainDecoder.progress;
+    return this.decoder.progress ?? 0;
   }
 
   async getResult(): Promise<DecodedFile> {
-    return unwrapEnvelope(this.fountainDecoder.getResult());
+    return unwrapEnvelope(this.decoder.getResult());
   }
 }
 

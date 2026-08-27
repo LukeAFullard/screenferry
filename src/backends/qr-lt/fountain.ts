@@ -1,5 +1,5 @@
 // Must be imported before `@ngraveio/bc-ur` — see src/env/polyfills.ts for why.
-import '../env/polyfills';
+import '../../env/polyfills';
 import { UR, UREncoder, URDecoder } from '@ngraveio/bc-ur';
 
 /**
