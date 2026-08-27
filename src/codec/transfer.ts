@@ -3,7 +3,7 @@ import { decodeEnvelope, encodeEnvelope } from './envelope';
 import { IntegrityError } from './errors';
 import { sha256Hex } from './hash';
 import { qrLtBackend } from '../backends/qr-lt';
-import type { BackendDecoder, TransferBackend } from '../backends/types';
+import type { BackendDecoder, Frame, TransferBackend } from '../backends/types';
 
 export interface FileMeta {
   filename: string;
@@ -39,18 +39,18 @@ export async function buildEnvelope(bytes: Uint8Array, meta: FileMeta): Promise<
 }
 
 /**
- * Envelopes `bytes` and returns an infinite stream of backend-encoded frames
- * — UR part strings for the default `qr-lt` backend. `opts.backend` lets a
- * caller select a different `TransferBackend`; omitting it preserves v1
+ * Envelopes `bytes` and returns an infinite stream of backend-encoded
+ * frames — UR part strings for the default `qr-lt` backend, or whatever
+ * `Frame` shape `opts.backend` produces. Omitting `backend` preserves v1
  * behavior exactly.
  */
-export async function encodeFileToParts(
+export async function encodeFileToParts<F extends Frame = string>(
   bytes: Uint8Array,
   meta: FileMeta,
-  opts?: { maxFragmentLength?: number; backend?: TransferBackend<string> },
-): Promise<AsyncIterable<string>> {
+  opts?: { maxFragmentLength?: number; backend?: TransferBackend<F> },
+): Promise<AsyncIterable<F>> {
   const envelope = await buildEnvelope(bytes, meta);
-  const backend = opts?.backend ?? qrLtBackend;
+  const backend = (opts?.backend ?? qrLtBackend) as unknown as TransferBackend<F>;
   return backend.encode(envelope, { maxFragmentLength: opts?.maxFragmentLength });
 }
 
@@ -59,14 +59,14 @@ export async function encodeFileToParts(
  * integrity against the envelope's stored SHA-256 hash. Defaults to the
  * `qr-lt` backend (Luby Transform fountain codes over UR part strings).
  */
-export class TransferDecoder {
-  private readonly decoder: BackendDecoder<string>;
+export class TransferDecoder<F extends Frame = string> {
+  private readonly decoder: BackendDecoder<F>;
 
-  constructor(backend: TransferBackend<string> = qrLtBackend) {
+  constructor(backend: TransferBackend<F> = qrLtBackend as unknown as TransferBackend<F>) {
     this.decoder = backend.createDecoder();
   }
 
-  receivePart(part: string): void {
+  receivePart(part: F): void {
     this.decoder.addFrame(part);
   }
 

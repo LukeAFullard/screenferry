@@ -46,6 +46,3 @@ export type { RasterOptions, RasterResult } from './raster';
 
 export { renderQrToCanvas } from './render';
 export type { RenderQrOptions } from './render';
-
-export { DisplayDriver } from './display-driver';
-export type { DisplayDriverOptions } from './display-driver';
