@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>screenferry — receiver demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 640px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      video {
+        border: 1px solid #ccc;
+        width: 320px;
+        height: 240px;
+        background: #000;
+      }
+      #status {
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
+      progress {
+        width: 320px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>screenferry — receiver demo</h1>
+    <p>
+      Manual smoke test for Stage 6 (receiver pipeline). Point a real camera at a device animating
+      <code>examples/sender-demo.html</code>, and this page reconstructs the file — including
+      recovering its name for a real download, via <code>URL.createObjectURL</code> +
+      <code>&lt;a download&gt;</code>.
+    </p>
+
+    <video id="preview" autoplay playsinline muted></video>
+    <p>
+      <button id="start">Start scanning</button>
+      <button id="stop">Stop</button>
+    </p>
+    <progress id="progress" value="0" max="1"></progress>
+    <pre id="status">idle</pre>
+    <p><a id="download-link" style="display: none">Download reconstructed file</a></p>
+
+    <script type="module">
+      import { ReceiverSession } from '../dist/index.js';
+
+      const video = document.getElementById('preview');
+      const status = document.getElementById('status');
+      const progress = document.getElementById('progress');
+      const downloadLink = document.getElementById('download-link');
+
+      const session = new ReceiverSession({
+        onProgress: (p) => {
+          progress.value = p;
+          status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)`;
+        },
+        onComplete: (file) => {
+          status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type})`;
+
+          const url = URL.createObjectURL(file);
+          downloadLink.href = url;
+          downloadLink.download = file.name;
+          downloadLink.textContent = `Download ${file.name}`;
+          downloadLink.style.display = 'inline';
+        },
+        onError: (err) => {
+          // IntegrityError specifically means "checksum mismatch" — offer a
+          // retry rather than treating it as a generic failure.
+          status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
+        },
+      });
+
+      document.getElementById('start').addEventListener('click', async () => {
+        downloadLink.style.display = 'none';
+        status.textContent = 'requesting camera...';
+        await session.start(video);
+        status.textContent = 'scanning...';
+      });
+
+      document.getElementById('stop').addEventListener('click', () => {
+        session.stop();
+        status.textContent = 'stopped';
+      });
+    </script>
+  </body>
+</html>

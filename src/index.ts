@@ -1,4 +1,5 @@
-import { encodeFileToParts } from './codec/transfer';
+import { encodeFileToParts, TransferDecoder } from './codec/transfer';
+import { Scanner, type ScannerOptions } from './scan/index';
 
 export interface EncodeOptions {
   /** Fragment size (payload bytes per frame). */
@@ -33,20 +34,107 @@ export type { DisplayDriverOptions } from './qr/display-driver';
 export { Scanner, Camera } from './scan/index';
 export type { ScannerOptions, CameraOptions } from './scan/index';
 
+export { IntegrityError } from './codec/errors';
+
+/**
+ * Reassembles fountain-encoded UR part strings (from any source — camera
+ * scan, screen-share frame, a test harness) back into the original file.
+ * `getResult()` throws `IntegrityError` — distinctly from a generic
+ * error — if the reassembled bytes fail their checksum; callers should
+ * treat that as "offer a retry", not "something is broken."
+ */
 export class StreamDecoder {
-  addFrame(_data: string): void {
-    throw new Error('Not implemented');
+  private readonly decoder = new TransferDecoder();
+
+  addFrame(data: string): void {
+    this.decoder.receivePart(data);
   }
 
+  /** bc-ur's estimated completion ratio (0-1) — an estimate, not a guarantee. */
   get progress(): number {
-    return 0;
+    return this.decoder.progress;
   }
 
   get isComplete(): boolean {
-    return false;
+    return this.decoder.isComplete();
   }
 
+  /**
+   * Resolves to a `File` (a `Blob` with the envelope's recovered `name`) so
+   * callers can trigger a real download without a separate filename
+   * channel — e.g. `URL.createObjectURL(file)` + `<a download>`.
+   */
   async getResult(): Promise<Blob> {
-    throw new Error('Not implemented');
+    const { filename, mimeType, bytes } = await this.decoder.getResult();
+    // TS's DOM lib wants BlobPart's buffer typed as exactly ArrayBuffer, not
+    // the wider ArrayBufferLike our Uint8Array pipeline carries — real bytes
+    // here are always plain ArrayBuffer-backed (never SharedArrayBuffer).
+    return new File([bytes as Uint8Array<ArrayBuffer>], filename, { type: mimeType });
+  }
+}
+
+export interface ReceiverSessionCallbacks {
+  /** Called after every frame that advances decode progress. */
+  onProgress?: (progress: number) => void;
+  onComplete?: (file: Blob) => void;
+  /** Includes `IntegrityError` on checksum failure — see `StreamDecoder`. */
+  onError?: (error: unknown) => void;
+}
+
+/**
+ * Convenience wrapper combining `Scanner` (camera) and `StreamDecoder`
+ * (data) for the common case: point a camera at a screen, get a `Blob`.
+ * `StreamDecoder` alone stays useful for non-camera inputs (tests, a future
+ * screen-share receiver) — this class is the camera-specific shortcut.
+ */
+export class ReceiverSession {
+  private readonly scanner = new Scanner();
+  private readonly decoder = new StreamDecoder();
+  private readonly callbacks: ReceiverSessionCallbacks;
+  private unsubscribe: (() => void) | undefined;
+  private settled = false;
+
+  constructor(callbacks: ReceiverSessionCallbacks = {}) {
+    this.callbacks = callbacks;
+  }
+
+  async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
+    this.settled = false;
+    this.unsubscribe = this.scanner.onDecode((text) => this.handleFrame(text));
+    await this.scanner.start(videoElement, opts);
+  }
+
+  stop(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.scanner.stop();
+  }
+
+  private handleFrame(text: string): void {
+    if (this.settled) return;
+
+    try {
+      this.decoder.addFrame(text);
+    } catch {
+      // Not a screenferry part — stray QR code in frame, misread, etc.
+      // Expected in live camera use; keep listening.
+      return;
+    }
+
+    this.callbacks.onProgress?.(this.decoder.progress);
+
+    if (this.decoder.isComplete) {
+      this.settled = true;
+      this.decoder
+        .getResult()
+        .then((file) => {
+          this.stop();
+          this.callbacks.onComplete?.(file);
+        })
+        .catch((err: unknown) => {
+          this.stop();
+          this.callbacks.onError?.(err);
+        });
+    }
   }
 }
