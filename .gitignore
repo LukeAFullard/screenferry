@@ -1,4 +1,12 @@
 node_modules/
-dist/
 *.log
 .DS_Store
+
+# dist/ is intentionally tracked (not gitignored): GitHub Pages serves
+# examples/*.html directly from main with no build step, and those pages
+# import ../dist/index.js. Rebuild and recommit it after any src/ change,
+# or the live demo silently runs stale code — see README's Manual testing
+# section. Sourcemaps stay untracked (not needed for the live demo, just
+# git bloat) but are still generated on disk and included in npm publishes
+# via package.json's "files" — this doesn't affect that.
+dist/**/*.map

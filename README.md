@@ -292,17 +292,30 @@ and decodes real Cimbar frames" path is unverified.
 
 ## Manual testing
 
-`npm run demo` builds the library and serves the whole repo on
-`http://localhost:5500` — open `http://localhost:5500/examples/app.html`
-for a small, unstyled test page covering both backends and negotiation:
-a same-device self-test (no camera needed — the fastest way to check
-whether a backend works at all on a given browser/device) and real
-sender/receiver sections for actual cross-device testing. Not part of the
-published package.
+Live: **https://lukeafullard.github.io/screenferry/examples/app.html** —
+GitHub Pages, deployed from `main`. Also runnable locally: `npm run demo`
+builds the library and serves the whole repo on `http://localhost:5500` —
+open `http://localhost:5500/examples/app.html`.
+
+`examples/app.html` is a small, unstyled test page covering both backends
+and negotiation: a same-device self-test (no camera needed — the fastest
+way to check whether a backend works at all on a given browser/device) and
+real sender/receiver sections for actual cross-device testing. Not part of
+the published package.
 
 `examples/` also has narrower single-purpose demos from earlier stages
 (`sender-demo.html`, `receiver-demo.html`, `loopback-demo.html`,
 `scan-worker-check.html`) — same serving instructions, `qrLtBackend` only.
+
+**Maintenance note:** unlike the rest of this repo, `dist/` is committed
+(not gitignored) specifically so GitHub Pages — which serves files as-is,
+with no build step — can resolve `examples/*.html`'s `../dist/index.js`
+imports. It's built output, not source: **after any change under `src/`,
+rebuild and recommit it** (`rm -rf dist && npm run build`, then commit
+`dist/`), or the live demo silently keeps running the old code with no
+error to signal it. Sourcemaps (`dist/**/*.map`) are excluded from git to
+keep this manageable — they're still generated on disk and included in
+npm publishes, just not committed.
 
 ## API stability
 
