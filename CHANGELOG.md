@@ -31,6 +31,14 @@ of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Added
 
+- A photosensitivity/seizure warning in the README and `PROJECT_PLAN.md`:
+  both the QR and (prospective) Cimbar backends are, functionally,
+  controlled strobing patterns, and consumers integrating this library are
+  expected to surface their own warning before displaying the sender's
+  animation.
+
+### Added
+
 - `encodeToFrames(file, opts)` — envelopes and Luby Transform fountain-encodes
   a `Blob`/`File`, yielding an infinite stream of QR frame content strings.
 - `DisplayDriver` — renders a frame stream onto a canvas via

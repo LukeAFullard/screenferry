@@ -19,6 +19,31 @@ which is exactly what an unreliable camera-and-screen link produces. See
 [`PROJECT_PLAN.md`](PROJECT_PLAN.md) for the fuller design rationale and
 staged implementation history.
 
+## ⚠️ Photosensitivity / seizure warning
+
+Both backends render **rapidly changing, high-contrast visual patterns** on
+screen — by design, that's how the data gets across. This carries a real
+risk of triggering seizures in people with photosensitive epilepsy, even
+without a prior diagnosis. This is a known, upstream-acknowledged risk for
+this class of technology, not a hypothetical one — the reference Cimbar
+implementation itself added an explicit epilepsy/seizure warning to its own
+encoder for the same reason.
+
+- The default `qrLtBackend` alternates black/white QR frames at a
+  configurable rate (`DisplayDriver`'s `fps` option, default 10fps) — lower
+  contrast and monochrome, but still a strobing pattern at a rate that can
+  affect sensitive viewers.
+- A prospective Cimbar backend (v2, higher throughput) uses rapidly cycling
+  **color** patterns, which carries a materially higher photosensitivity
+  risk than QR's black-and-white frames.
+- **Any application built on this library should surface its own warning**
+  before displaying the sender's animation — screenferry does not show a
+  warning UI itself, since it has no UI layer at all (see Scope above).
+  Consider offering a reduced-fps or reduced-contrast mode, and avoid
+  auto-playing the animation without user intent.
+- If you or a viewer are known to be affected by photosensitive epilepsy,
+  do not view the sender's screen directly.
+
 ## Install
 
 ```sh

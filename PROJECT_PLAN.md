@@ -37,6 +37,24 @@ internals — it is a dependency they will import later, not the other way round
 | 11 | Backend negotiation/UX | Capability detection, fast-mode toggle, fallback |
 | 12 | v2.0.0 release | Published, documented, both backends selectable |
 
+## Accessibility & safety
+
+Both backends are, functionally, a controlled strobing pattern: QR frames
+alternate black/white at a configurable fps; Cimbar (v2) alternates *color*
+patterns, typically at a higher rate, for higher throughput. This carries a
+real photosensitive-epilepsy/seizure risk — not hypothetical: libcimbar's
+own upstream added an explicit epilepsy/seizure warning to its reference
+encoder (v0.6.8, upstream issue #186) for exactly this reason. Since
+screenferry has no UI layer of its own (see Scope), it cannot show a warning
+directly — this is a hard requirement on any consumer's integration, not
+an optional nicety:
+- Surface a warning before the sender's animation is shown, every time.
+- Never auto-play the animation without explicit user intent.
+- Consider a reduced-fps/reduced-contrast mode for sensitive viewers.
+- Weight this into backend selection/negotiation UX (Stage 11) — a
+  consumer may want to default away from Cimbar's color strobing even when
+  it's the faster option.
+
 ## Key decisions carried from research
 - License: **MIT** for our code. Any MPL-2.0 code pulled in later (libcimbar)
   stays MPL-2.0 at the file level — does not relicense this package.
