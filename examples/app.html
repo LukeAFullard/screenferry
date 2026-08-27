@@ -69,9 +69,42 @@
       <label>Backend: </label>
       <select id="backend">
         <option value="qr-lt" selected>qr-lt (default, well-tested)</option>
-        <option value="cimbar">cimbar (opt-in, unverified — see README)</option>
+        <option value="cimbar">cimbar (opt-in — see README's Cimbar section)</option>
         <option value="auto">auto (negotiated)</option>
       </select>
+    </p>
+
+    <p>
+      Speed tuning (applies to every section below —
+      <a href="#speed-tuning">see notes</a>):
+      <label
+        >fps: <input type="number" id="tune-fps" value="10" min="1" max="60" style="width: 4em"
+      /></label>
+      <label
+        >fragmentSize (qr-lt only):
+        <input
+          type="number"
+          id="tune-fragment"
+          placeholder="auto"
+          min="50"
+          max="2000"
+          style="width: 6em"
+      /></label>
+      <label
+        >scanHz (receiver):
+        <input type="number" id="tune-scanhz" value="20" min="1" max="60" style="width: 4em"
+      /></label>
+      <label
+        >frameSize (cimbar only):
+        <input
+          type="number"
+          id="tune-cimbar-frame-size"
+          placeholder="1024"
+          min="64"
+          max="1024"
+          step="64"
+          style="width: 5em"
+      /></label>
     </p>
 
     <section>
@@ -133,11 +166,63 @@
       <p><a id="live-recv-download" style="display: none">Download reconstructed file</a></p>
     </section>
 
+    <section id="speed-tuning">
+      <h2>Speed tuning notes (qr-lt)</h2>
+      <p>
+        qr-lt's throughput is roughly <code>fps × fragmentSize</code> bytes/second, bounded by how
+        fast the receiver can actually scan and decode. Two knobs, both above:
+      </p>
+      <ul>
+        <li>
+          <strong>fps</strong> — <code>DisplayDriver</code>'s display rate. Higher sends more
+          frames/second, but the receiver's camera and decode loop need to keep up, or frames just
+          get skipped without being scanned (no benefit, same failure mode as raising it too far).
+        </li>
+        <li>
+          <strong>fragmentSize</strong> — bytes packed into each QR frame. Bigger means fewer total
+          frames needed, but a denser, harder-to-scan QR code — reliability drops if the receiver's
+          camera can't resolve it clearly (resolution, distance, focus, motion blur all matter more
+          as this grows). Leave blank for the library's own tuned default (~580 bytes, chosen for
+          reliable scanning at ECC level L / QR version ≤ 20 — see <code>qr:capacity</code> in
+          <code>package.json</code> if you want to compute a different ceiling).
+        </li>
+        <li>
+          <strong>scanHz</strong> — how often the receiver samples a camera frame for decoding.
+          Should track roughly 2× the sender's fps (the default) — much lower and it may miss frames
+          as they change; much higher just burns CPU decoding the same still-displayed frame
+          repeatedly, with no throughput benefit.
+        </li>
+      </ul>
+      <p>
+        Beyond these knobs: QR ECC is already at the library's minimum overhead level (L), so
+        there's no further redundancy to trade away. On the physical/environmental side — screen
+        brightness/contrast, camera autofocus lock, holding distance/angle steady, and reducing
+        motion blur — all matter more than they might seem, and are usually a bigger lever on
+        real-world reliability (which is what lets you safely raise fps/fragmentSize in the first
+        place) than any of the code-level knobs above.
+      </p>
+    </section>
+
     <script type="module">
       import { encodeToFrames, DisplayDriver, NegotiatingReceiverSession } from '../dist/index.js';
 
       function selectedBackend() {
         return document.getElementById('backend').value;
+      }
+
+      function tuning() {
+        const fps = Number(document.getElementById('tune-fps').value) || 10;
+        const fragmentRaw = document.getElementById('tune-fragment').value;
+        const fragmentSize = fragmentRaw ? Number(fragmentRaw) : undefined;
+        const scanHz = Number(document.getElementById('tune-scanhz').value) || 20;
+        const cimbarFrameSizeRaw = document.getElementById('tune-cimbar-frame-size').value;
+        // undefined -> cimbarBackend's own 1024 default; encodeToFrames only
+        // forwards backendOptions when it's actually set, so qr-lt/auto stay
+        // unaffected by this even when it has a value.
+        const backendOptions = cimbarFrameSizeRaw
+          ? { frameSize: Number(cimbarFrameSizeRaw) }
+          : undefined;
+        return { fps, fragmentSize, scanHz, backendOptions };
       }
 
       function defaultSampleFile(label) {
@@ -177,15 +262,23 @@
           const file =
             document.getElementById('self-test-file').files?.[0] ?? defaultSampleFile(backend);
 
-          const fakeStream = cameraCanvas.captureStream(15);
+          // A fresh captureStream() per call, not one captured upfront and
+          // reused: NegotiatingReceiverSession restarts Scanner (stop+start)
+          // when switching into rawFrames mode for a non-qr-lt backend, and
+          // Camera.stop() correctly stops its stream's tracks (the right
+          // behavior for a real camera) -- reusing a single already-stopped
+          // fake stream here would leave the receiver with a permanently
+          // dead video source post-switch, silently never seeing another
+          // frame.
           const originalGetUserMedia = navigator.mediaDevices.getUserMedia;
-          navigator.mediaDevices.getUserMedia = async () => fakeStream;
+          navigator.mediaDevices.getUserMedia = async () => cameraCanvas.captureStream(15);
           startMirroring();
 
+          const { fps, fragmentSize, scanHz, backendOptions } = tuning();
           const senderDriver = new DisplayDriver(
-            encodeToFrames(file, { preferredBackend: backend }),
+            encodeToFrames(file, { preferredBackend: backend, fragmentSize, backendOptions }),
             senderCanvas,
-            { fps: 10 },
+            { fps },
           );
           senderDriver.start();
 
@@ -220,7 +313,7 @@
           });
 
           try {
-            await session.start();
+            await session.start(undefined, { scanHz });
             status.textContent = `sending + receiving "${file.name}" via ${backend}...`;
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;
@@ -241,10 +334,15 @@
           const backend = selectedBackend();
           const file =
             document.getElementById('live-send-file').files?.[0] ?? defaultSampleFile(backend);
-          const frames = encodeToFrames(file, { preferredBackend: backend });
+          const { fps, fragmentSize, backendOptions } = tuning();
+          const frames = encodeToFrames(file, {
+            preferredBackend: backend,
+            fragmentSize,
+            backendOptions,
+          });
 
           driver = new DisplayDriver(frames, canvas, {
-            fps: 10,
+            fps,
             onFrameSent: (index) => {
               status.textContent = `sending "${file.name}" via ${backend} — frame ${index + 1}`;
             },
@@ -292,7 +390,8 @@
           downloadLink.style.display = 'none';
           status.textContent = 'requesting camera...';
           try {
-            await session.start(video);
+            const { scanHz } = tuning();
+            await session.start(video, { scanHz });
             status.textContent = 'scanning...';
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;

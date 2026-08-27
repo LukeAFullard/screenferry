@@ -73,4 +73,26 @@ describe('TransferBackend plumbing (backend-agnostic encode/decode path)', () =>
     expect(sawStringFrame).toBe(true);
     expect(decoder.isComplete).toBe(true);
   });
+
+  it('passes backendOptions through to backend.encode() verbatim, in place of maxFragmentLength', async () => {
+    let receivedOpts: unknown;
+    const backend: TransferBackend<ImageFrame> = {
+      id: 'opts-spy',
+      async *encode(bytes, opts) {
+        receivedOpts = opts;
+        yield { data: bytes, width: 1, height: 1 };
+      },
+      createDecoder: createFakeImageBackend().createDecoder,
+    };
+
+    const file = new File([pseudoRandomBytes(64, 79)], 'opts.bin', {
+      type: 'application/octet-stream',
+    });
+    const iterator = encodeToFrames(file, { backend, backendOptions: { frameSize: 42 } })[
+      Symbol.asyncIterator
+    ]();
+    await iterator.next();
+
+    expect(receivedOpts).toEqual({ frameSize: 42 });
+  });
 });

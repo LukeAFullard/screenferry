@@ -24,6 +24,41 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
   committed for this reason specifically; see the README's Manual testing
   section for the resulting "rebuild before committing" discipline this
   creates.
+- `cimbarBackend`'s decode never actually worked — real-device testing
+  against the live demo confirmed it (frames rendered and displayed, but
+  no transfer ever completed). Root cause: libcimbar's decode is a
+  **two-stage** pipeline that no single piece of the reference JS glue
+  documents end to end — `_cimbard_scan_extract_decode` (what the
+  original wrapper called) only extracts one frame's raw fountain chunk;
+  actually reconstructing a file requires also calling
+  `_cimbard_fountain_decode` (the real completion signal, returning a
+  file id) and then `_cimbard_decompress_read` (Cimbar applies its own
+  internal zstd compression in transit) — found by reading libcimbar's
+  own C++ source (`cimbar_recv_js.cpp`) directly, since the JS glue alone
+  doesn't show it. Also added a required `_cimbard_configure_decode(mode)`
+  call matching the encoder's mode, never called by the reference JS for
+  the default case. A full encode→decode round trip — byte-exact, through
+  two genuinely independent WASM module instances (ruling out a
+  shared-memory false positive) — is now verified working in a real
+  browser at both 256×256 and the default 1024×1024 `frameSize`. See the
+  README's Cimbar section for what's still open (real-hardware
+  performance, a real camera round-trip, and a real minimum-payload-size
+  gotcha this surfaced: very small payloads can fail decode due to
+  low-entropy padding).
+- `encodeFileToParts`/`encodeToFrames` gained a `backendOptions` passthrough
+  so a specific backend's own encode options (e.g.
+  `CimbarEncodeOptions.frameSize`) are actually reachable without calling
+  `cimbarBackend.encode()` directly — closes a gap flagged (but not fixed)
+  in the previous round.
+- `examples/app.html`'s self-test captured its fake camera stream once and
+  reused it, but `NegotiatingReceiverSession` correctly stops+restarts
+  `Scanner` (and its `Camera`, which correctly stops the stream's tracks)
+  when switching into `rawFrames` mode for a non-`qr-lt` backend — so the
+  self-test's single reused stream went permanently dead right after that
+  switch, and the cimbar self-test silently never received another frame,
+  forever. A demo bug, not a library bug (a real camera's `getUserMedia()`
+  legitimately returns a fresh stream each call); fixed by capturing a
+  fresh stream per call instead.
 
 ### Changed
 
@@ -112,7 +147,11 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
   part of the published package) covering both backends and negotiation:
   a same-device self-test (no camera needed) plus real sender/receiver
   sections for cross-device testing. Used to obtain the real-browser
-  Cimbar findings noted above.
+  Cimbar findings noted above. Also exposes live tuning controls (`fps`,
+  `fragmentSize`, `scanHz` for qr-lt; `frameSize` for cimbar, via the new
+  `backendOptions` passthrough) with an on-page explanation of what each
+  one trades off, so real-device performance/reliability tuning doesn't
+  require editing code.
 - A photosensitivity/seizure warning in the README and `PROJECT_PLAN.md`:
   both the QR and Cimbar backends are, functionally, controlled strobing
   patterns, and consumers integrating this library are expected to surface

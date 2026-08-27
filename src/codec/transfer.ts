@@ -47,11 +47,17 @@ export async function buildEnvelope(bytes: Uint8Array, meta: FileMeta): Promise<
 export async function encodeFileToParts<F extends Frame = string>(
   bytes: Uint8Array,
   meta: FileMeta,
-  opts?: { maxFragmentLength?: number; backend?: TransferBackend<F> },
+  opts?: { maxFragmentLength?: number; backend?: TransferBackend<F>; backendOptions?: unknown },
 ): Promise<AsyncIterable<F>> {
   const envelope = await buildEnvelope(bytes, meta);
   const backend = (opts?.backend ?? qrLtBackend) as unknown as TransferBackend<F>;
-  return backend.encode(envelope, { maxFragmentLength: opts?.maxFragmentLength });
+  // `backendOptions` lets a caller reach a specific backend's own encode
+  // options (e.g. `CimbarEncodeOptions.frameSize`) — `qrLtBackend` only
+  // understands `maxFragmentLength`, so that stays the fallback shape.
+  return backend.encode(
+    envelope,
+    opts?.backendOptions ?? { maxFragmentLength: opts?.maxFragmentLength },
+  );
 }
 
 /**

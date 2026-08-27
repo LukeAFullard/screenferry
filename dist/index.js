@@ -10751,7 +10751,7 @@ async function _i(e, t) {
 }
 async function vi(e, t, n) {
 	let r = await _i(e, t);
-	return (n?.backend ?? gi).encode(r, { maxFragmentLength: n?.maxFragmentLength });
+	return (n?.backend ?? gi).encode(r, n?.backendOptions ?? { maxFragmentLength: n?.maxFragmentLength });
 }
 var yi = class {
 	constructor(e = gi) {
@@ -10947,7 +10947,7 @@ var Pi = {
 		if (!this.isComplete) {
 			if (!this.module) {
 				this.pending.push(e), this.loading || (this.loading = !0, Ti().then((e) => {
-					this.module = e, this.imgBuffer = new ki(e), this.fountainBuffer = new ki(e), this.errorBuffer = new ki(e), this.drainPending();
+					e._cimbard_configure_decode(Ei), this.module = e, this.imgBuffer = new ki(e), this.chunkBuffer = new ki(e), this.decompressBuffer = new ki(e), this.errorBuffer = new ki(e), this.drainPending();
 				}));
 				return;
 			}
@@ -10961,11 +10961,32 @@ var Pi = {
 		}
 	}
 	processFrame(e) {
-		let t = this.module, n = this.imgBuffer, r = this.fountainBuffer;
+		let t = this.module, n = this.imgBuffer, r = this.chunkBuffer;
 		if (!t || !n || !r) return;
 		n.ensure(e.data.length).set(e.data);
 		let i = t._cimbard_get_bufsize(), a = r.ensure(i), o = t._cimbard_scan_extract_decode(n.byteOffset, e.width, e.height, Oi, r.byteOffset, a.length);
-		o > 0 ? this.result = a.slice(0, o) : o < 0 && this.reportError();
+		if (o === 0) return;
+		if (o < 0) {
+			this.reportError();
+			return;
+		}
+		let s = t._cimbard_fountain_decode(r.byteOffset, o);
+		if (s <= 0n) return;
+		let c = Number(s & 4294967295n);
+		this.result = this.readDecompressedFile(c);
+	}
+	readDecompressedFile(e) {
+		let t = this.module, n = this.decompressBuffer;
+		if (!t || !n) throw Error("CimbarDecoder: module not loaded");
+		let r = t._cimbard_get_decompress_bufsize(), i = n.ensure(r), a = [], o = 0;
+		for (;;) {
+			let s = t._cimbard_decompress_read(e, n.byteOffset, r);
+			if (s <= 0) break;
+			a.push(i.slice(0, s)), o += s;
+		}
+		let s = new Uint8Array(o), c = 0;
+		for (let e of a) s.set(e, c), c += e.length;
+		return s;
 	}
 	reportError() {
 		let e = this.module;
@@ -11062,7 +11083,8 @@ async function* Ji(e, t) {
 			mimeType: i
 		}, {
 			maxFragmentLength: t.fragmentSize,
-			backend: e
+			backend: e,
+			backendOptions: t.backendOptions
 		}), o = Math.max(1, t.headerIntervalFrames ?? Gi);
 		yield* qi(a, e.id, o);
 		return;
@@ -11072,7 +11094,8 @@ async function* Ji(e, t) {
 		mimeType: i
 	}, {
 		maxFragmentLength: t?.fragmentSize,
-		backend: t?.backend
+		backend: t?.backend,
+		backendOptions: t?.backendOptions
 	});
 }
 var Yi = class {
