@@ -138,7 +138,16 @@ frames for denser color-based ones.
   stack, so a consumer who never uses `cimbarBackend` doesn't pay for it,
   but a receiver that does still pays this cost up front.
 - **Higher photosensitivity risk** — see the warning above.
+- **~33.55MB file-size ceiling**, per libcimbar's own documentation of its
+  (wirehair) fountain layer — `qrLtBackend`'s bc-ur/LT layer has no such
+  documented limit. Not enforced by this wrapper; a transfer past that
+  size may simply fail.
 - This is why it stays opt-in, never the default.
+
+Per libcimbar's default "mode B" (4-color, 6 bits/tile, Reed-Solomon
+ecc=30/155) at its documented 1024×1024 grid: roughly 7,500 usable bytes
+per frame, versus `qrLtBackend`'s ~580-byte QR fragment — the throughput
+gain is real, on the order of 10x per frame, when it works.
 
 **Frame shape differs.** `Frame` for this backend is rendered pixel data
 (`ImageFrame: { data, width, height }`), not a string. `DisplayDriver`

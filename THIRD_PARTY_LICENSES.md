@@ -34,3 +34,12 @@ app (`send.js`, `recv.js`, `main.js`, HTML, service workers, etc.) that this
 project does not use; `src/backends/cimbar/index.ts` is an independent
 wrapper written against the same WASM ABI, calling it directly rather than
 reusing that reference app's JS.
+
+Code comments in `src/backends/cimbar/` also cite, as documentation
+sources (not vendored code — nothing from either was copied), libcimbar's
+own [`DETAILS.md`](https://github.com/sz3/libcimbar/blob/master/DETAILS.md)
+and [`sz3/cimbar`](https://github.com/sz3/cimbar) — the original Python
+research implementation libcimbar is a from-scratch C++ rewrite of, whose
+`README.md`/`ABOUT.md` document the encoding parameters (grid resolution,
+mode/color-depth meanings, capacity) this WASM build doesn't otherwise
+explain anywhere reachable from this repo.
