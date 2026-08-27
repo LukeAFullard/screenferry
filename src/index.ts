@@ -1,6 +1,14 @@
 import { encodeFileToParts, TransferDecoder } from './codec/transfer';
 import { Scanner, type ScannerOptions } from './scan/index';
 import type { Frame, TransferBackend } from './backends/types';
+import {
+  backendForId,
+  decodeHeaderFrame,
+  encodeHeaderFrame,
+  resolvePreferredBackend,
+  type PreferredBackend,
+} from './backends/negotiation';
+import { qrLtBackend } from './backends/qr-lt';
 
 export interface EncodeOptions<F extends Frame = string> {
   /** Fragment size (payload bytes per frame). */
@@ -12,6 +20,56 @@ export interface EncodeOptions<F extends Frame = string> {
 }
 
 /**
+ * `encodeToFrames`'s negotiated mode (Stage 11): instead of pinning a
+ * backend the receiver must already know, `preferredBackend` picks one —
+ * `"auto"` tries `cimbarBackend` if it's usable here, falling back to
+ * `qrLtBackend` otherwise — and the stream carries a plain-QR header/beacon
+ * frame announcing that choice, so `NegotiatingStreamDecoder`/
+ * `NegotiatingReceiverSession` on the receiving end never need to be told
+ * which backend is in use. See the README's "Backend negotiation" section.
+ */
+export interface NegotiatedEncodeOptions {
+  /** Fragment size (payload bytes per frame), passed through to the resolved backend. */
+  fragmentSize?: number;
+  fps?: number;
+  preferredBackend: PreferredBackend;
+  /**
+   * How often (in data frames) to repeat the header/beacon frame, so a
+   * receiver that joins mid-stream — or missed the first one — still picks
+   * it up quickly. The very first frame is always the header regardless of
+   * this value. Default 10.
+   */
+  headerIntervalFrames?: number;
+}
+
+const DEFAULT_HEADER_INTERVAL_FRAMES = 10;
+
+function isNegotiatedEncodeOptions(
+  opts: EncodeOptions<Frame> | NegotiatedEncodeOptions,
+): opts is NegotiatedEncodeOptions {
+  return 'preferredBackend' in opts;
+}
+
+/** Interleaves a repeating header/beacon frame ahead of each pull from `dataFrames` — see `NegotiatedEncodeOptions`. */
+async function* interleaveHeaderFrames(
+  dataFrames: AsyncIterable<Frame>,
+  backendId: string,
+  intervalFrames: number,
+): AsyncIterable<Frame> {
+  const iterator = dataFrames[Symbol.asyncIterator]();
+  const header = encodeHeaderFrame(backendId);
+  let index = 0;
+
+  for (;;) {
+    if (index % intervalFrames === 0) yield header;
+    const { value, done } = await iterator.next();
+    if (done) return;
+    yield value;
+    index++;
+  }
+}
+
+/**
  * Envelopes and encodes `file` via the chosen backend, yielding raw frames —
  * UR part strings for the default `qrLtBackend`, rendered pixel data
  * (`ImageFrame`) for `cimbarBackend` — not rendered-to-screen output. This
@@ -19,16 +77,36 @@ export interface EncodeOptions<F extends Frame = string> {
  * choice (see `DisplayDriver` for a canvas-based one). The stream is
  * infinite (both backends are rateless): the caller decides when it has
  * sent enough and stops pulling.
+ *
+ * Passing `preferredBackend` instead of `backend` switches to negotiated
+ * mode (Stage 11) — see `NegotiatedEncodeOptions`.
  */
-export async function* encodeToFrames<F extends Frame = string>(
+export function encodeToFrames(file: Blob, opts: NegotiatedEncodeOptions): AsyncIterable<Frame>;
+export function encodeToFrames<F extends Frame = string>(
   file: Blob,
   opts?: EncodeOptions<F>,
-): AsyncIterable<F> {
+): AsyncIterable<F>;
+export async function* encodeToFrames(
+  file: Blob,
+  opts?: EncodeOptions<Frame> | NegotiatedEncodeOptions,
+): AsyncIterable<Frame> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const filename = 'name' in file && typeof file.name === 'string' ? file.name : 'file';
   const mimeType = file.type || 'application/octet-stream';
 
-  const parts = await encodeFileToParts<F>(
+  if (opts && isNegotiatedEncodeOptions(opts)) {
+    const backend = await resolvePreferredBackend(opts.preferredBackend);
+    const parts = await encodeFileToParts(
+      bytes,
+      { filename, mimeType },
+      { maxFragmentLength: opts.fragmentSize, backend },
+    );
+    const intervalFrames = Math.max(1, opts.headerIntervalFrames ?? DEFAULT_HEADER_INTERVAL_FRAMES);
+    yield* interleaveHeaderFrames(parts, backend.id, intervalFrames);
+    return;
+  }
+
+  const parts = await encodeFileToParts(
     bytes,
     { filename, mimeType },
     { maxFragmentLength: opts?.fragmentSize, backend: opts?.backend },
@@ -43,6 +121,8 @@ export { qrLtBackend } from './backends/qr-lt';
 export { cimbarBackend } from './backends/cimbar';
 export type { CimbarEncodeOptions } from './backends/cimbar';
 export type { Frame, ImageFrame, TransferBackend } from './backends/types';
+export { probeCimbarAvailable, resolvePreferredBackend } from './backends/negotiation';
+export type { PreferredBackend } from './backends/negotiation';
 
 export { Scanner, Camera } from './scan/index';
 export type { ScannerOptions, CameraOptions } from './scan/index';
@@ -158,6 +238,170 @@ export class ReceiverSession<F extends Frame = string> {
           this.stop();
           this.callbacks.onError?.(err);
         });
+    }
+  }
+}
+
+export interface NegotiatingStreamDecoderCallbacks {
+  /** Called once, as soon as the sender's backend is known — either from its header frame, or (see `addFrame`) inferred. */
+  onBackendResolved?: (backendId: string) => void;
+}
+
+/**
+ * Receive-side counterpart to `encodeToFrames`'s `preferredBackend` mode
+ * (Stage 11): consumes a heterogeneous `Frame` stream — the sender's
+ * plain-QR header/beacon frames interleaved with its chosen backend's data
+ * frames — auto-detects which backend is in use, and delegates to an
+ * internal `StreamDecoder` for it. The caller never needs to know which
+ * backend the sender picked; `StreamDecoder` itself stays useful when the
+ * backend is already known/fixed (no negotiation overhead).
+ */
+export class NegotiatingStreamDecoder {
+  private decoder: StreamDecoder<Frame> | undefined;
+  private resolvedBackendId: string | undefined;
+  private readonly callbacks: NegotiatingStreamDecoderCallbacks;
+
+  constructor(callbacks: NegotiatingStreamDecoderCallbacks = {}) {
+    this.callbacks = callbacks;
+  }
+
+  /** The backend id announced by the header frame, once resolved — `undefined` until then. */
+  get backendId(): string | undefined {
+    return this.resolvedBackendId;
+  }
+
+  get progress(): number {
+    return this.decoder?.progress ?? 0;
+  }
+
+  get isComplete(): boolean {
+    return this.decoder?.isComplete ?? false;
+  }
+
+  addFrame(frame: Frame): void {
+    const headerBackendId = decodeHeaderFrame(frame);
+    if (headerBackendId !== undefined) {
+      if (!this.resolvedBackendId) this.resolve(headerBackendId);
+      return; // Header frames are a beacon, not payload -- never handed to a backend decoder.
+    }
+
+    if (!this.resolvedBackendId) {
+      // The header frame itself can be lost like any other frame. A
+      // qrLtBackend data frame (a bc-ur UR part) is indistinguishable from
+      // "haven't seen the header yet" except by trying it — anything else
+      // (an ImageFrame) can't be qrLtBackend data, so there's nothing
+      // useful to do with it until a header arrives.
+      if (typeof frame !== 'string') return;
+      this.resolve(qrLtBackend.id);
+    }
+
+    this.decoder?.addFrame(frame);
+  }
+
+  async getResult(): Promise<Blob> {
+    if (!this.decoder) {
+      throw new Error(
+        'NegotiatingStreamDecoder: cannot get result before a backend has been resolved',
+      );
+    }
+    return this.decoder.getResult();
+  }
+
+  private resolve(backendId: string): void {
+    const backend = backendForId(backendId);
+    if (!backend) return; // Unrecognized id (a newer sender, noise) -- keep waiting.
+
+    this.resolvedBackendId = backendId;
+    this.decoder = new StreamDecoder<Frame>(backend);
+    this.callbacks.onBackendResolved?.(backendId);
+  }
+}
+
+export interface NegotiatingReceiverSessionCallbacks extends ReceiverSessionCallbacks {
+  /** Called once the sender's backend has been detected. */
+  onBackendResolved?: (backendId: string) => void;
+}
+
+/**
+ * Camera-facing counterpart to `encodeToFrames`'s `preferredBackend` mode
+ * (Stage 11) — the negotiated equivalent of `ReceiverSession`. Always
+ * starts `Scanner` in its default QR text-decode mode (where the header
+ * frame always lives); on detecting a non-`qr-lt` backend, restarts
+ * `Scanner` with `rawFrames: true` and continues the transfer with the
+ * right decoder. The caller never chooses a backend up front.
+ *
+ * The restart briefly stops and re-acquires the camera — unavoidable given
+ * `Scanner`'s current design (see the README's Cimbar section on
+ * `rawFrames`) — and, like `cimbarBackend` itself, this path has not been
+ * exercised against a real camera in this project's test harness.
+ */
+export class NegotiatingReceiverSession {
+  private readonly scanner = new Scanner();
+  private readonly decoder: NegotiatingStreamDecoder;
+  private readonly callbacks: NegotiatingReceiverSessionCallbacks;
+  private unsubscribe: (() => void) | undefined;
+  private settled = false;
+  private videoElement: HTMLVideoElement | undefined;
+  private scannerOpts: ScannerOptions | undefined;
+
+  constructor(callbacks: NegotiatingReceiverSessionCallbacks = {}) {
+    this.callbacks = callbacks;
+    this.decoder = new NegotiatingStreamDecoder({
+      onBackendResolved: (backendId) => {
+        this.callbacks.onBackendResolved?.(backendId);
+        if (backendId !== qrLtBackend.id) void this.switchToRawFrames();
+      },
+    });
+  }
+
+  async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
+    this.settled = false;
+    this.videoElement = videoElement;
+    this.scannerOpts = opts;
+    this.unsubscribe = this.scanner.onDecode((frame) => this.handleFrame(frame));
+    await this.scanner.start(videoElement, { ...opts, rawFrames: false });
+  }
+
+  stop(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.scanner.stop();
+  }
+
+  private handleFrame(frame: Frame): void {
+    if (this.settled) return;
+
+    try {
+      this.decoder.addFrame(frame);
+    } catch {
+      // Not a screenferry part — stray QR code in frame, misread, etc.
+      // Expected in live camera use; keep listening.
+      return;
+    }
+
+    this.callbacks.onProgress?.(this.decoder.progress);
+
+    if (this.decoder.isComplete) {
+      this.settled = true;
+      this.decoder
+        .getResult()
+        .then((file) => {
+          this.stop();
+          this.callbacks.onComplete?.(file);
+        })
+        .catch((err: unknown) => {
+          this.stop();
+          this.callbacks.onError?.(err);
+        });
+    }
+  }
+
+  private async switchToRawFrames(): Promise<void> {
+    this.scanner.stop();
+    try {
+      await this.scanner.start(this.videoElement, { ...this.scannerOpts, rawFrames: true });
+    } catch (err) {
+      this.callbacks.onError?.(err);
     }
   }
 }

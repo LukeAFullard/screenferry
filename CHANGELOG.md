@@ -11,9 +11,9 @@ Prepped for a 1.0.0 release — not yet tagged or published. See
 [`PROJECT_PLAN.md`](PROJECT_PLAN.md) Stage 8 for the remaining release
 steps (publish, git tag, manual device-matrix attestation).
 
-Also includes Stage 9's codec abstraction refactor and Stage 10's Cimbar
-backend integration (both v2), landed ahead of the 1.0.0 publish since that
-hasn't happened yet — see below.
+Also includes Stage 9's codec abstraction refactor, Stage 10's Cimbar
+backend integration, and Stage 11's backend negotiation (all v2), landed
+ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Changed
 
@@ -49,6 +49,28 @@ hasn't happened yet — see below.
 
 ### Added
 
+- **Backend negotiation (Stage 11).** `encodeToFrames` accepts
+  `preferredBackend: "auto" | "qr-lt" | "cimbar"` instead of `backend` —
+  `"auto"` probes `cimbarBackend`'s availability
+  (`probeCimbarAvailable()`, which never throws) and falls back to
+  `qrLtBackend` if it isn't usable here. In this mode the sender always
+  renders a small, fixed header/beacon frame as plain QR first (repeated
+  periodically via `headerIntervalFrames`), announcing which backend the
+  data frames use — there's no return channel for the two sides to ask
+  each other directly. `NegotiatingStreamDecoder` and
+  `NegotiatingReceiverSession` are the receive-side counterparts: they
+  auto-detect the backend from that header frame (switching `Scanner` into
+  `rawFrames` mode itself if needed) so the receiver never has to be told
+  which backend the sender picked. Plain `backend`/`rawFrames` pinning
+  (Stage 9/10) stays available unchanged for callers that already know.
+  Covered by `test/backends/negotiation.test.ts`: a real QR render+scan
+  round-trip of the header frame (catching a real case-folding bug the
+  QR layer's alphanumeric-mode optimization introduces), the header
+  interleaving cadence, `resolvePreferredBackend`'s `"auto"` logic with
+  injected capability probes (both available and unavailable), and a full
+  negotiated qr-lt transfer end to end — the negotiation mechanics
+  themselves don't depend on Cimbar actually working; only negotiating
+  *to* Cimbar inherits its "unverified in a browser" caveat.
 - `cimbarBackend` — a `TransferBackend` implementation wrapping
   [libcimbar](https://github.com/sz3/libcimbar)'s official WASM build
   (MPL-2.0, vendored under `src/backends/cimbar/vendor/` — see
