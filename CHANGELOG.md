@@ -78,12 +78,19 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
   to `qrLtBackend`. Lazy-loaded via a dynamic import (mirrors the QR decode
   stack), so importing `screenferry` doesn't cost anything unless it's
   actually used.
-  **Written against libcimbar's reference JS glue, but not yet exercised
-  against the real WASM binary in a browser** — this repo's headless test
-  harness has no WebGL/camera to verify it with. Treat it as experimental
-  pending real-device testing (see README's Cimbar section); the manual
-  device-matrix pass this needs (`PROJECT_PLAN.md`/`IMPLEMENTATION_10`,
-  step 7) is still outstanding.
+  **Partially verified in a real browser** (headless Chromium,
+  software-rendered WebGL, no real GPU/camera — see README's Cimbar
+  section for the full detail): the WASM loads, the encoder binds a real
+  WebGL context and renders, `gl.readPixels` returns real (non-blank)
+  frame data, and the decoder's WASM calls run without crashing. A full
+  transfer completing was **not** confirmed — at the default 1024×1024
+  `frameSize` each frame was too slow under *software* rendering to
+  finish within two minutes (confirmed resolution-dependent, not a hang:
+  `frameSize: 64` rendered each frame in tens of ms). Real GPU/camera
+  hardware and actual pixel-content correctness remain unverified; treat
+  it as experimental pending that. The manual device-matrix pass this
+  needs (`PROJECT_PLAN.md`/`IMPLEMENTATION_10`, step 7) is still
+  outstanding.
 - A `test/backends/plumbing.test.ts` round-trip test using a synthetic
   non-qr-lt, image-frame `TransferBackend`, proving the generic
   `encodeToFrames`/`StreamDecoder`/`TransferBackend` plumbing itself is
@@ -91,6 +98,11 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
   calls are correct (which the above caveat covers separately).
 - `THIRD_PARTY_LICENSES.md` — attribution and provenance (source URL,
   release tag, tarball SHA-256) for the vendored libcimbar build.
+- `examples/app.html` and `npm run demo` — a basic manual test page (not
+  part of the published package) covering both backends and negotiation:
+  a same-device self-test (no camera needed) plus real sender/receiver
+  sections for cross-device testing. Used to obtain the real-browser
+  Cimbar findings noted above.
 - A photosensitivity/seizure warning in the README and `PROJECT_PLAN.md`:
   both the QR and Cimbar backends are, functionally, controlled strobing
   patterns, and consumers integrating this library are expected to surface

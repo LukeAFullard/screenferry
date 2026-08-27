@@ -42,7 +42,8 @@
     "format": "prettier --check .",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "qr:capacity": "node scripts/qr-capacity.mjs"
+    "qr:capacity": "node scripts/qr-capacity.mjs",
+    "demo": "vite build && npx --yes serve -l 5500 ."
   },
   "license": "MIT",
   "devDependencies": {
