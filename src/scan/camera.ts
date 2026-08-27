@@ -1,6 +1,20 @@
+/** Common "1080p" ideal — most webcams/phone cameras support at least this; browsers negotiate down if not. */
+const DEFAULT_IDEAL_WIDTH = 1920;
+const DEFAULT_IDEAL_HEIGHT = 1080;
+
 export interface CameraOptions {
   /** Which physical camera to prefer. Defaults to the rear/environment-facing one. */
   facingMode?: 'environment' | 'user';
+  /**
+   * Requested capture resolution (`ideal`, not a hard minimum — the browser
+   * still falls back to whatever the hardware supports). Defaults to a high
+   * resolution: with no constraint at all, browsers commonly negotiate down
+   * to something like 640x480, which is fine for QR's large modules but
+   * leaves too few pixels per cell for `cimbarBackend`'s much finer grid to
+   * resolve, even when the code fills the frame.
+   */
+  width?: number;
+  height?: number;
 }
 
 /**
@@ -41,7 +55,11 @@ export class Camera {
 
   async start(opts?: CameraOptions): Promise<HTMLVideoElement> {
     this.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: opts?.facingMode ?? 'environment' },
+      video: {
+        facingMode: opts?.facingMode ?? 'environment',
+        width: { ideal: opts?.width ?? DEFAULT_IDEAL_WIDTH },
+        height: { ideal: opts?.height ?? DEFAULT_IDEAL_HEIGHT },
+      },
       audio: false,
     });
 
@@ -51,6 +69,12 @@ export class Camera {
     await this.video.play();
 
     return this.video;
+  }
+
+  /** Actual negotiated capture resolution, e.g. for diagnosing a low-resolution fallback. `undefined` before the stream has produced its first frame. */
+  get resolution(): { width: number; height: number } | undefined {
+    const { videoWidth, videoHeight } = this.video;
+    return videoWidth && videoHeight ? { width: videoWidth, height: videoHeight } : undefined;
   }
 
   stop(): void {

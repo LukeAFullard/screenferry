@@ -161,6 +161,23 @@ frames for denser color-based ones.
   real-device smoke test to know for sure. `examples/app.html` now exposes
   `frameSize` as a live control specifically so you can find a resolution
   that performs acceptably on your own device.
+- **Real-camera scanning needs more pixels per cell than QR does.** Cimbar's
+  8x8-cell grid is far denser than QR's modules, so it's much more sensitive
+  to two things that barely affect QR: the on-screen size of the displayed
+  code (shrink it in CSS/layout and every cell shrinks with it) and the
+  camera's actual capture resolution. Browsers commonly negotiate a low
+  resolution (e.g. 640x480) when `getUserMedia` doesn't ask for anything
+  specific — plenty for QR, not for Cimbar. `Camera`/`Scanner` now request
+  1920x1080 as an `ideal` `MediaTrackConstraint` by default (overridable via
+  `CameraOptions.width`/`height`; still just a request, the browser can fall
+  back lower), and both expose a `resolution` getter (also mirrored on
+  `ReceiverSession`/`NegotiatingReceiverSession`) so you can check what was
+  actually negotiated. `examples/app.html` displays it live during scanning,
+  and its Cimbar tuning notes cover the on-screen-size side (the video/canvas
+  elements there are resizable — drag their corner — specifically so you can
+  size them generously instead of a small fixed box). This is a real,
+  identified failure mode, not a hypothetical — but real-device confirmation
+  that it's the *only* one is still open (see the performance caveat below).
 - **More sensitive to camera/screen color accuracy** than QR's
   black-and-white frames — screen color calibration, camera white balance,
   and ambient lighting all matter more here.
@@ -324,7 +341,11 @@ real sender/receiver sections for actual cross-device testing. It also
 exposes live tuning controls — `fps`, `fragmentSize`, `scanHz` (see
 "Backend negotiation" → speed tuning notes on the page itself), and
 `frameSize` for `cimbarBackend` — so you can experiment directly on a
-given device rather than editing code. Not part of the published package.
+given device rather than editing code. The sender canvas and receiver video
+are both resizable (drag the bottom-right corner) and the receiver shows the
+camera's actual negotiated resolution live, which matters a lot for Cimbar
+(see its tuning notes on the page, and the Cimbar backend section above).
+Not part of the published package.
 
 `examples/` also has narrower single-purpose demos from earlier stages
 (`sender-demo.html`, `receiver-demo.html`, `loopback-demo.html`,

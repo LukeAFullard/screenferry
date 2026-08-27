@@ -23,6 +23,11 @@ export declare class Camera {
     constructor(videoElement?: HTMLVideoElement);
     private static createHiddenVideoElement;
     start(opts?: CameraOptions): Promise<HTMLVideoElement>;
+    /** Actual negotiated capture resolution, e.g. for diagnosing a low-resolution fallback. `undefined` before the stream has produced its first frame. */
+    get resolution(): {
+        width: number;
+        height: number;
+    } | undefined;
     stop(): void;
     /** Draws the current video frame to an offscreen canvas and returns it as `ImageData`. */
     grabFrame(): ImageData | undefined;
@@ -31,6 +36,16 @@ export declare class Camera {
 export declare interface CameraOptions {
     /** Which physical camera to prefer. Defaults to the rear/environment-facing one. */
     facingMode?: 'environment' | 'user';
+    /**
+     * Requested capture resolution (`ideal`, not a hard minimum — the browser
+     * still falls back to whatever the hardware supports). Defaults to a high
+     * resolution: with no constraint at all, browsers commonly negotiate down
+     * to something like 640x480, which is fine for QR's large modules but
+     * leaves too few pixels per cell for `cimbarBackend`'s much finer grid to
+     * resolve, even when the code fills the frame.
+     */
+    width?: number;
+    height?: number;
 }
 
 /**
@@ -219,6 +234,11 @@ export declare class NegotiatingReceiverSession {
     constructor(callbacks?: NegotiatingReceiverSessionCallbacks);
     start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void>;
     stop(): void;
+    /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
+    get resolution(): {
+        width: number;
+        height: number;
+    } | undefined;
     private handleFrame;
     private switchToRawFrames;
 }
@@ -310,6 +330,11 @@ export declare class ReceiverSession<F extends Frame = string> {
     constructor(callbacks?: ReceiverSessionCallbacks, backend?: TransferBackend<F>);
     start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void>;
     stop(): void;
+    /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
+    get resolution(): {
+        width: number;
+        height: number;
+    } | undefined;
     private handleFrame;
 }
 
@@ -353,6 +378,11 @@ export declare class Scanner {
     private pendingDecode;
     private readonly callbacks;
     onDecode(callback: DecodeCallback): Unsubscribe;
+    /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
+    get resolution(): {
+        width: number;
+        height: number;
+    } | undefined;
     start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void>;
     stop(): void;
     private tick;

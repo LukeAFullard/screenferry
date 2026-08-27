@@ -226,6 +226,11 @@ export class ReceiverSession<F extends Frame = string> {
     this.scanner.stop();
   }
 
+  /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
+  get resolution(): { width: number; height: number } | undefined {
+    return this.scanner.resolution;
+  }
+
   private handleFrame(frame: F): void {
     if (this.settled) return;
 
@@ -379,6 +384,11 @@ export class NegotiatingReceiverSession {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.scanner.stop();
+  }
+
+  /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
+  get resolution(): { width: number; height: number } | undefined {
+    return this.scanner.resolution;
   }
 
   private handleFrame(frame: Frame): void {

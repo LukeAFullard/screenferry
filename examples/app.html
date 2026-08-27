@@ -22,15 +22,37 @@
       canvas {
         border: 1px solid #ccc;
         image-rendering: pixelated;
-        width: 260px;
-        height: 260px;
+        width: min(90vw, 480px);
+        height: min(90vw, 480px);
+        max-width: 100%;
         background: #fff;
+        resize: both;
+        overflow: hidden;
+      }
+      #self-test-camera-canvas {
+        /* Mirrors whatever size the sender canvas is currently rendering at
+           (see startMirroring below) -- fixed square dimensions here would
+           just get overridden as soon as a frame arrives, and left stale
+           in between (e.g. right after switching backend/frameSize). */
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        resize: none;
       }
       video {
+        display: block;
         border: 1px solid #ccc;
-        width: 260px;
-        height: 195px;
+        width: min(90vw, 480px);
+        height: min(70vw, 360px);
+        max-width: 100%;
         background: #000;
+        resize: both;
+        overflow: hidden;
+      }
+      #live-recv-resolution {
+        font-family: monospace;
+        color: #666;
+        margin: 0.25rem 0 0;
       }
       .row {
         display: flex;
@@ -149,14 +171,25 @@
         <button id="live-send-start">Start</button>
         <button id="live-send-stop">Stop</button>
       </p>
+      <p>
+        Drag the canvas's bottom-right corner to resize it. For Cimbar, displaying it as large as
+        your screen allows (and holding the receiving camera close) gives the scanner far more
+        pixels per cell to work with.
+      </p>
       <canvas id="live-send-canvas"></canvas>
       <pre id="live-send-status">idle</pre>
     </section>
 
     <section>
       <h2>3. Receive (real camera)</h2>
-      <p>Point this device's camera at another device running section 2.</p>
+      <p>
+        Point this device's camera at another device running section 2. Drag the video's
+        bottom-right corner to resize the preview — for Cimbar especially, a bigger preview makes it
+        much easier to judge whether the code fills the frame cleanly (see the tuning notes below:
+        on-screen code size and camera resolution matter more for Cimbar than for QR).
+      </p>
       <video id="live-recv-video" autoplay playsinline muted></video>
+      <p id="live-recv-resolution"></p>
       <p>
         <button id="live-recv-start">Start scanning</button>
         <button id="live-recv-stop">Stop</button>
@@ -200,6 +233,34 @@
         motion blur — all matter more than they might seem, and are usually a bigger lever on
         real-world reliability (which is what lets you safely raise fps/fragmentSize in the first
         place) than any of the code-level knobs above.
+      </p>
+      <h3>Cimbar-specific notes</h3>
+      <p>
+        Cimbar packs far more information per unit area than QR (a fine 8x8-cell grid across the
+        whole frame, vs. QR's much larger, sparser modules), so it's far more sensitive to two
+        things QR mostly tolerates:
+      </p>
+      <ul>
+        <li>
+          <strong>On-screen code size.</strong> If the sending canvas is displayed small, every
+          Cimbar cell is proportionally tiny too — a QR code can still be read shrunk down, but
+          Cimbar's finer cells become unresolvable well before that. Display the sender canvas as
+          large as the screen allows (resize it — see section 2) and hold the receiving camera close
+          enough that the code fills a good fraction of the frame.
+        </li>
+        <li>
+          <strong>Camera capture resolution.</strong> Without an explicit constraint, browsers often
+          negotiate a low resolution (e.g. 640x480) that's plenty for QR but starves Cimbar of
+          pixels per cell. <code>Camera</code>/<code>Scanner</code> now request 1920x1080 as an
+          <em>ideal</em> by default — section 3 shows the actual negotiated resolution once scanning
+          starts, so you can tell whether the camera is genuinely giving you low resolution vs. the
+          code just being displayed too small.
+        </li>
+      </ul>
+      <p>
+        If it's still not scanning: try a lower <code>frameSize</code> (e.g. 512) first — fewer,
+        larger cells are much more forgiving of camera resolution and focus than the 1024 default,
+        at the cost of needing more frames to send the same payload.
       </p>
     </section>
 
@@ -363,6 +424,24 @@
         const status = document.getElementById('live-recv-status');
         const progress = document.getElementById('live-recv-progress');
         const downloadLink = document.getElementById('live-recv-download');
+        const resolutionEl = document.getElementById('live-recv-resolution');
+        let resolutionPoll;
+
+        function pollResolution() {
+          resolutionPoll = setInterval(() => {
+            const res = session.resolution;
+            resolutionEl.textContent = res
+              ? `camera capture resolution: ${res.width}x${res.height}` +
+                (res.width < 1280
+                  ? ' (low — Cimbar needs more pixels per cell than this; see tuning notes)'
+                  : '')
+              : 'camera capture resolution: negotiating...';
+          }, 500);
+        }
+        function stopPollingResolution() {
+          clearInterval(resolutionPoll);
+          resolutionEl.textContent = '';
+        }
 
         const session = new NegotiatingReceiverSession({
           onBackendResolved: (id) => {
@@ -393,6 +472,7 @@
             const { scanHz } = tuning();
             await session.start(video, { scanHz });
             status.textContent = 'scanning...';
+            pollResolution();
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;
           }
@@ -401,6 +481,7 @@
         document.getElementById('live-recv-stop').addEventListener('click', () => {
           session.stop();
           status.textContent = 'stopped';
+          stopPollingResolution();
         });
       }
     </script>

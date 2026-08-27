@@ -50,6 +50,23 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
   `CimbarEncodeOptions.frameSize`) are actually reachable without calling
   `cimbarBackend.encode()` directly — closes a gap flagged (but not fixed)
   in the previous round.
+- Real-camera Cimbar scanning sat idle and never decoded, even with frames
+  visibly displaying: `Camera`'s `getUserMedia` call requested no
+  resolution, so browsers commonly negotiated down to something like
+  640x480 — plenty of pixels per module for QR's decode path, not nearly
+  enough per cell for Cimbar's much denser grid, especially combined with
+  `examples/app.html`'s sender canvas/receiver video both being fixed at a
+  small ~260px CSS size regardless of viewport. `Camera`/`Scanner` now
+  request 1920x1080 as an `ideal` constraint by default (configurable via
+  new `CameraOptions.width`/`height`), and expose the actual negotiated
+  resolution via a new `resolution` getter (also on `ReceiverSession` /
+  `NegotiatingReceiverSession`). `examples/app.html`'s sender canvas and
+  receiver video are now resizable and sized much larger by default, and
+  the receive section shows the live negotiated resolution plus a new
+  Cimbar-specific tuning-notes section covering both causes. Not yet
+  confirmed against a real device end to end (see the README's Cimbar
+  section) — this addresses the specific, identified cause, not a general
+  guarantee.
 - `examples/app.html`'s self-test captured its fake camera stream once and
   reused it, but `NegotiatingReceiverSession` correctly stops+restarts
   `Scanner` (and its `Camera`, which correctly stops the stream's tracks)
