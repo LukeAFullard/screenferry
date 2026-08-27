@@ -11,6 +11,24 @@ Prepped for a 1.0.0 release — not yet tagged or published. See
 [`PROJECT_PLAN.md`](PROJECT_PLAN.md) Stage 8 for the remaining release
 steps (publish, git tag, manual device-matrix attestation).
 
+Also includes Stage 9's codec abstraction refactor (v2 prep), landed ahead
+of the 1.0.0 publish since that hasn't happened yet — see below.
+
+### Changed
+
+- Introduced a `TransferBackend` interface (`src/backends/types.ts`)
+  behind which every transfer backend sits, so `encodeToFrames` and
+  `StreamDecoder` are no longer hardwired to QR + Luby Transform fountain
+  codes. `encodeToFrames`/`StreamDecoder` accept an optional `backend`,
+  defaulting to the new `qrLtBackend` export — omitting it is behaviorally
+  identical to v1.
+- Relocated the existing QR + Luby Transform implementation (fountain
+  encoder/decoder, QR module computation, canvas rasterization,
+  `DisplayDriver`) under `src/backends/qr-lt/` as the `qrLtBackend`
+  implementation of that interface. Pure relocation — no behavior change;
+  the full loopback + fault-injection + reliability-matrix suite passes
+  unmodified against the relocated code.
+
 ### Added
 
 - `encodeToFrames(file, opts)` — envelopes and Luby Transform fountain-encodes

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runLoopback } from './loopback';
-import type { EccLevel } from '../../src/qr/encode';
+import type { EccLevel } from '../../src/backends/qr-lt/encode';
 import { bytesEqual, pseudoRandomBytes } from '../helpers/bytes';
 
 async function fileBytes(blob: Blob): Promise<Uint8Array> {

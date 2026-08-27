@@ -1,11 +1,14 @@
 import { encodeFileToParts, TransferDecoder } from './codec/transfer';
 import { Scanner, type ScannerOptions } from './scan/index';
+import type { TransferBackend } from './backends/types';
 
 export interface EncodeOptions {
   /** Fragment size (payload bytes per frame). */
   fragmentSize?: number;
   /** Target frame rate in FPS. */
   fps?: number;
+  /** Which transfer backend to use. Defaults to `qrLtBackend` (QR + Luby Transform fountain codes). */
+  backend?: TransferBackend<string>;
 }
 
 /**
@@ -23,13 +26,16 @@ export async function* encodeToFrames(file: Blob, opts?: EncodeOptions): AsyncIt
   const parts = await encodeFileToParts(
     bytes,
     { filename, mimeType },
-    { maxFragmentLength: opts?.fragmentSize },
+    { maxFragmentLength: opts?.fragmentSize, backend: opts?.backend },
   );
   yield* parts;
 }
 
-export { DisplayDriver } from './qr/display-driver';
-export type { DisplayDriverOptions } from './qr/display-driver';
+export { DisplayDriver } from './backends/qr-lt/display-driver';
+export type { DisplayDriverOptions } from './backends/qr-lt/display-driver';
+
+export { qrLtBackend } from './backends/qr-lt';
+export type { Frame, TransferBackend } from './backends/types';
 
 export { Scanner, Camera } from './scan/index';
 export type { ScannerOptions, CameraOptions } from './scan/index';
@@ -44,7 +50,11 @@ export { IntegrityError } from './codec/errors';
  * treat that as "offer a retry", not "something is broken."
  */
 export class StreamDecoder {
-  private readonly decoder = new TransferDecoder();
+  private readonly decoder: TransferDecoder;
+
+  constructor(backend?: TransferBackend<string>) {
+    this.decoder = new TransferDecoder(backend);
+  }
 
   addFrame(data: string): void {
     this.decoder.receivePart(data);

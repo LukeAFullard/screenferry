@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeToFrames, IntegrityError, StreamDecoder } from '../src/index';
 import { encodeEnvelope } from '../src/codec/envelope';
-import { createFountainEncoder } from '../src/codec/fountain';
+import { createFountainEncoder } from '../src/backends/qr-lt/fountain';
 import { sha256Hex } from '../src/codec/hash';
 import { bytesEqual, pseudoRandomBytes } from './helpers/bytes';
 

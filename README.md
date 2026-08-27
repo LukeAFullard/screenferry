@@ -50,6 +50,12 @@ contents (strings) — it's UI-agnostic. `DisplayDriver` is the batteries-includ
 canvas renderer/animator, but you can drive the stream yourself with any
 QR rendering approach if you need more control.
 
+Both `encodeToFrames` and `StreamDecoder` accept an optional `backend`,
+defaulting to `qrLtBackend` (QR codes + Luby Transform fountain codes) —
+today's only backend, but the same `TransferBackend` interface a future
+Cimbar backend will implement. Omitting it is equivalent to passing
+`qrLtBackend` explicitly.
+
 ### Receiving a file
 
 ```ts
@@ -104,11 +110,12 @@ strings via `addFrame()`, check `.isComplete`, then `await .getResult()`.
 
 The public API is exactly what the package's root export (`import ... from
 'screenferry'`) exposes: `encodeToFrames`, `DisplayDriver`, `Scanner`,
-`Camera`, `StreamDecoder`, `ReceiverSession`, `IntegrityError`, and their
-associated option/type exports. Internal modules (anything under `src/codec`,
-`src/qr`, `src/scan` in the source) are implementation details and can
-change in a minor or patch release. Versioning follows semver strictly from
-1.0.0.
+`Camera`, `StreamDecoder`, `ReceiverSession`, `IntegrityError`, `qrLtBackend`,
+and their associated option/type exports (including the `TransferBackend`
+interface, ahead of a pluggable v2 Cimbar backend). Internal modules
+(anything under `src/codec`, `src/backends`, `src/scan` in the source) are
+implementation details and can change in a minor or patch release.
+Versioning follows semver strictly from 1.0.0.
 
 ## Non-goals
 
