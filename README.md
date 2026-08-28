@@ -257,7 +257,7 @@ frames for denser color-based ones.
 
 Per libcimbar's default "mode B" (4-color, 6 bits/tile, Reed-Solomon
 ecc=30/155) at its documented 1024×1024 grid: roughly 7,500 usable bytes
-per frame, versus `qrLtBackend`'s ~2,127-byte QR fragment (at the
+per frame, versus `qrLtBackend`'s ~2,111-byte QR fragment (at the
 configured max QR version, ECC L) — the throughput gain is real, on the
 order of 3-4x per frame, once performance on real hardware is confirmed.
 
