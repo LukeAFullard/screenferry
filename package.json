@@ -37,6 +37,7 @@
   ],
   "scripts": {
     "build": "vite build",
+    "postbuild": "node scripts/verify-dist.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --check .",
