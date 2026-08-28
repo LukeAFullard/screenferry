@@ -9955,7 +9955,7 @@ ${h(e)}
 		return e && e.__esModule ? e : { default: e };
 	};
 	Object.defineProperty(e, "__esModule", { value: !0 }), e.URDecoder = e.UREncoder = e.UR = void 0, e.UR = t(Mn()).default, e.UREncoder = t(vr()).default, e.URDecoder = t(br()).default;
-})))(), Sr = 2127;
+})))(), Sr = 2111;
 async function* Cr(e, t) {
 	let n = xr.UR.fromBuffer(Buffer.from(e)), r = new xr.UREncoder(n, t?.maxFragmentLength ?? Sr);
 	for (;;) yield r.nextPart();

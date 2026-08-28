@@ -106,7 +106,7 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 - Raised `qrLtBackend`'s default QR version ceiling from 20 to 40 (the
   highest version ISO/IEC 18004 defines), and recomputed
   `DEFAULT_MAX_FRAGMENT_LENGTH` (`src/backends/qr-lt/fountain.ts`) to match
-  via `npm run qr:capacity` (580 → 2127 bytes at ECC L). Also raised gzip
+  via `npm run qr:capacity` (580 → 2111 bytes at ECC L). Also raised gzip
   pre-compression to `level: 9` (`src/codec/compression.ts`, a one-time
   cost paid before the transfer starts) and the camera's requested capture
   `frameRate` from 15 to 30 (`src/scan/camera.ts`), so a sender pushing
@@ -116,6 +116,17 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
   unchanged — no RaptorQ, no multi-QR tiling. `DEFAULT_FPS` (10) and
   `DEFAULT_SCAN_HZ` (20) are unchanged; real-camera scan reliability at QR
   version 40 has not yet been validated on physical hardware.
+  `scripts/qr-capacity.mjs` was also fixed to size its search against a
+  worst-case seqNum/seqLength (a long transfer of a large file), not just a
+  small sample: a UR part's `seqNum`/`seqLength` are encoded both as plain
+  decimal digits and as CBOR integers, both of which grow in steps as the
+  values cross digit/byte-width boundaries, so a fragment length calibrated
+  only against a small, low-seqNum sample fits initially but throws
+  `RangeError: Data too long` on every part once a real transfer grows past
+  that sample's band — a real regression caught after this landed, where
+  transfers past a few hundred KB reliably hung the sender's display on
+  whatever last rendered (usually the small periodic header-beacon frame,
+  which looked like a stuck "default" QR code).
 - Introduced a `TransferBackend` interface (`src/backends/types.ts`)
   behind which every transfer backend sits, so `encodeToFrames` and
   `StreamDecoder` are no longer hardwired to QR + Luby Transform fountain

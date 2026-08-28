@@ -5,12 +5,26 @@ import { UR, UREncoder, URDecoder } from '@ngraveio/bc-ur';
 /**
  * Fragment length (bytes) used when the caller doesn't specify one.
  * Empirically measured by `npm run qr:capacity` (see `scripts/qr-capacity.mjs`)
- * as the largest fragment whose rendered UR part still fits QR version <= 40
- * at ECC L — the highest version ISO/IEC 18004 defines. Matches the measured
- * 2127-byte cutoff exactly, since the binary search already only accepts
- * fragment lengths that fit.
+ * as the largest fragment that keeps a rendered UR part fitting QR version
+ * <= 40 at ECC L — the highest version ISO/IEC 18004 defines — even in the
+ * worst case for a long-running/large transfer.
+ *
+ * A UR part string encodes `seqNum` and `seqLength` both as plain decimal
+ * digits (in the `ur:type/seqNum-seqLength/...` path) and as CBOR integers
+ * (in the bytewords-encoded body), and both encodings grow in fixed steps
+ * as the values cross digit/byte-width boundaries. `seqLength` grows with
+ * file size (more fragments); `seqNum` grows with transfer duration (the
+ * fountain encoder cycles forever, so a long-running or heavily-retried
+ * transfer pushes it arbitrarily high). A fragment length calibrated only
+ * against a small sample (few fragments, low seqNum) fits initially but
+ * throws `RangeError: Data too long` once real usage grows past that
+ * sample's digit/byte-width band — every subsequent part then fails the
+ * same way, since seqNum only increases, hanging the display on whatever
+ * last rendered successfully. `qr-capacity.mjs` accounts for this
+ * directly, so 2111 already includes that margin — don't bump it back up
+ * to whatever a naive single-sample search reports.
  */
-const DEFAULT_MAX_FRAGMENT_LENGTH = 2127;
+const DEFAULT_MAX_FRAGMENT_LENGTH = 2111;
 
 /**
  * Drives a Luby Transform fountain encoder over `bytes`, yielding UR-encoded
