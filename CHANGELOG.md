@@ -17,6 +17,15 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Fixed
 
+- `Scanner`'s single `pendingDecode` flag reserved the "one decode in
+  flight" slot for the full duration of *capture plus decode*, so the next
+  camera frame couldn't even start capturing until the current one had
+  finished decoding — worse than the flag's own name implied, and worse
+  than the pre-async-capture behavior it replaced. Capture re-entrancy
+  (`captureInFlight`) and decode busyness (now the new `DecodeWorkerPool`,
+  see Added below) are separate concerns tracked separately: a capture can
+  start as soon as the previous one resolves, independent of whether a
+  decode worker is free to take the result.
 - `Scanner`'s decode-worker `postMessage` calls used no transfer list, so
   every captured frame was structured-clone *copied* into the worker
   rather than moved — and `Camera.grabLumaFrame` compounded it by handing
@@ -177,6 +186,21 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Added
 
+- **Decode worker pool.** `ScannerOptions` gained `decodeWorkers` (default
+  1, unchanged from prior behavior): the number of camera frames that can
+  be mid-decode at once, via a new `DecodeWorkerPool`
+  (`src/scan/worker-pool.ts`) that dispatches each captured frame to
+  whichever worker is idle and drops it (no queuing) if every worker is
+  busy — safe because fountain-coded frames are order-independent and the
+  sender keeps redrawing. Previously a 30fps camera always fed a single
+  serialized zxing-wasm decoder, so raising `scanHz` past that one
+  decoder's own throughput bought nothing. Left opt-in and manual (no
+  `navigator.hardwareConcurrency`-based auto-default): each worker costs
+  its own ~1MB zxing-wasm instance plus a startup delay, and there's no
+  value above 1 that's safe on every device — a low-end phone can thrash
+  rather than benefit. `examples/app.html` exposes it as a "decode
+  workers" tuning control, readable against the `goodput` metric above to
+  see whether a given value actually helps on a real device.
 - **Goodput measurement.** `ReceiverSession`/`NegotiatingReceiverSession`
   gained a `goodput` getter — decoded (accepted) frames/sec over a
   trailing 2s window, via a new internal `GoodputTracker`

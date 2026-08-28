@@ -135,6 +135,10 @@
         <input type="number" id="tune-scanhz" value="20" min="1" max="60" style="width: 4em"
       /></label>
       <label
+        >decode workers (receiver, qr-lt / qr-bin-lt only):
+        <input type="number" id="tune-decode-workers" value="1" min="1" max="8" style="width: 3em"
+      /></label>
+      <label
         >frameSize (cimbar only):
         <input
           type="number"
@@ -244,6 +248,19 @@
           as they change; much higher just burns CPU decoding the same still-displayed frame
           repeatedly, with no throughput benefit.
         </li>
+        <li>
+          <strong>decode workers</strong> — how many camera frames the receiver can decode in
+          parallel. Defaults to 1 (this library's original behavior): a single zxing-wasm decoder
+          serialized behind every captured frame, so raising <code>scanHz</code> past that one
+          decoder's own throughput bought nothing. Raising this past 1 lets that many frames decode
+          concurrently — worthwhile on capable hardware, especially alongside a higher
+          <code>scanHz</code>, since decode latency was the de facto ceiling on how much of it was
+          actually usable. Each worker costs its own ~1MB zxing-wasm instance plus a startup delay,
+          and on a low-end phone several concurrent decodes can thrash the CPU rather than help —
+          there's no universally safe value above 1, so this is left as a manual, per-device choice
+          rather than an automatic default. The goodput reading next to the progress bar above is
+          the way to tell whether a given value actually helped on your device.
+        </li>
       </ul>
       <p>
         Beyond these knobs: QR ECC is already at the library's minimum overhead level (L), so
@@ -312,6 +329,7 @@
         const fragmentRaw = document.getElementById('tune-fragment').value;
         const fragmentSize = fragmentRaw ? Number(fragmentRaw) : undefined;
         const scanHz = Number(document.getElementById('tune-scanhz').value) || 20;
+        const decodeWorkers = Number(document.getElementById('tune-decode-workers').value) || 1;
         const cimbarFrameSizeRaw = document.getElementById('tune-cimbar-frame-size').value;
         // undefined -> cimbarBackend's own 1024 default; encodeToFrames only
         // forwards backendOptions when it's actually set, so qr-lt/auto stay
@@ -319,7 +337,7 @@
         const backendOptions = cimbarFrameSizeRaw
           ? { frameSize: Number(cimbarFrameSizeRaw) }
           : undefined;
-        return { fps, fragmentSize, scanHz, backendOptions };
+        return { fps, fragmentSize, scanHz, decodeWorkers, backendOptions };
       }
 
       function defaultSampleFile(label) {
@@ -372,7 +390,7 @@
           navigator.mediaDevices.getUserMedia = async () => cameraCanvas.captureStream(15);
           startMirroring();
 
-          const { fps, fragmentSize, scanHz, backendOptions } = tuning();
+          const { fps, fragmentSize, scanHz, decodeWorkers, backendOptions } = tuning();
           const senderFrames = isPinned
             ? encodeToFrames(file, { backend: cimbarBackend, fragmentSize, backendOptions })
             : encodeToFrames(file, { preferredBackend: backend, fragmentSize, backendOptions });
@@ -414,7 +432,10 @@
             : new NegotiatingReceiverSession(callbacks);
 
           try {
-            await session.start(undefined, isPinned ? { scanHz, rawFrames: true } : { scanHz });
+            await session.start(
+              undefined,
+              isPinned ? { scanHz, rawFrames: true } : { scanHz, decodeWorkers },
+            );
             status.textContent = `sending + receiving "${file.name}" via ${backend}${isPinned ? ' (pinned)' : ''}...`;
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;
@@ -531,8 +552,11 @@
           const isPinned = pinned(selectedBackend());
           session = createSession(isPinned);
           try {
-            const { scanHz } = tuning();
-            await session.start(video, isPinned ? { scanHz, rawFrames: true } : { scanHz });
+            const { scanHz, decodeWorkers } = tuning();
+            await session.start(
+              video,
+              isPinned ? { scanHz, rawFrames: true } : { scanHz, decodeWorkers },
+            );
             status.textContent = `scanning...${isPinned ? ' (pinned)' : ''}`;
             pollResolution();
           } catch (err) {
