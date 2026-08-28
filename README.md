@@ -255,9 +255,16 @@ frames for denser color-based ones.
     (`_cimbard_fountain_decode`'s `-5`, specifically "chunk size doesn't
     match the configured mode") sides of the C ABI signal real failures via
     negative return codes that were previously discarded outright. The
-    encoder now throws on a hard failure instead of silently producing
-    unusable frames forever; the decoder logs `-5` distinctly from ordinary
-    "not complete yet."
+    encoder now logs a throttled warning on any negative code instead of
+    discarding it silently; the decoder logs `-5` distinctly from ordinary
+    "not complete yet." Deliberately not thrown as a hard error on the
+    encoder side — this project's reverse-engineered notes on which
+    negative codes actually mean failure aren't exhaustively confirmed
+    against the vendored WASM build (the finalizing zero-length
+    `_cimbare_encode` call has been observed returning `-1` in otherwise-
+    working sessions, which isn't one of its documented failure codes), so
+    treating every negative return as fatal risked aborting a working
+    transfer on a code that doesn't actually indicate failure.
   - **No receive-side progress signal.** `CimbarDecoder` didn't implement
     `BackendDecoder.progress`, so any UI reading it saw a flat 0% for an
     entire transfer regardless of actual progress — indistinguishable from

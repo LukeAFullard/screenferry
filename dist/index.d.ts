@@ -102,51 +102,6 @@ export declare interface CameraOptions {
     height?: number;
 }
 
-/**
- * The v2 backend: libcimbar's WASM encoder/decoder (MPL-2.0, vendored —
- * see `THIRD_PARTY_LICENSES.md`), wrapped behind `TransferBackend`. Higher
- * throughput than `qrLtBackend`, at the cost of being far less
- * battle-tested — `qrLtBackend` has this project's full test suite behind
- * it; this doesn't.
- *
- * A full encode→decode round trip (byte-exact, through two independent
- * WASM module instances, so not a shared-memory false positive) has been
- * verified in a real browser (headless Chromium, software-rendered WebGL —
- * see README's Cimbar section for the full detail and its real caveats:
- * unconfirmed on real GPU/camera hardware, and very small payloads, under
- * roughly a few hundred bytes, can fail — Cimbar pads them to fill a full
- * fountain chunk, and if that padding is low-entropy the symbol extractor
- * may not reliably find tile boundaries; this project's own envelope
- * overhead plus a normal file easily clears that in practice).
- *
- * **Known limitation: one sender and one receiver can't safely share a
- * module instance.** `loadCimbarModule` loads the WASM binary once per
- * process, and `_cimbare_configure`/`_cimbard_configure_decode` both write
- * the same single C++-side `Config::active_conf()` (see `module.ts`'s doc
- * comments on those two exports) — there's no per-role state. Running a
- * sender's still-in-progress `encode()` generator and a receiver's
- * `CimbarDecoder` in the same page/thread means the receiver's per-frame
- * mode-cycling (`_cimbard_configure_decode`) can clobber the encoder's
- * config between frames, corrupting everything it renders from that point
- * on — with no visible symptom beyond "images appear, nothing ever
- * decodes." `examples/app.html`'s cimbar section runs this exact
- * same-page loopback for convenience; its "pin cimbar" checkbox does not
- * work around this (it only skips header-frame negotiation, not the
- * shared module instance). A real two-party transfer (a phone camera
- * receiving from a laptop screen, as this backend is designed for) uses
- * two separate WASM module instances/processes and isn't affected.
- *
- * `Frame` for this backend is rendered pixel data (`ImageFrame`), not a
- * string — `DisplayDriver` and `Scanner` both need to be told to expect
- * that (see their respective option docs) when using this backend instead
- * of the default.
- *
- * libcimbar's `DETAILS.md` documents a ~33.55MB file-size ceiling on its
- * own (wirehair) fountain layer — unlike `qrLtBackend`'s bc-ur/LT layer,
- * which has no such documented limit. Not enforced here (unconfirmed
- * against this exact WASM build, and rejecting on an unverified number
- * risks false negatives); a transfer past that size may simply fail.
- */
 export declare const cimbarBackend: TransferBackend<ImageFrame>;
 
 export declare interface CimbarEncodeOptions {
