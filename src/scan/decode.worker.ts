@@ -79,11 +79,23 @@ const workerScope = globalThis as unknown as DecodeWorkerScope;
 
 workerScope.onmessage = (event) => {
   const { id } = event.data;
-  const imageData =
-    'luma' in event.data ? expandLumaToImageData(event.data.luma) : event.data.imageData;
 
-  decoder
-    .decodeFrame(imageData)
-    .then((result) => workerScope.postMessage(toDecodeResponse(id, result)))
-    .catch((err: unknown) => workerScope.postMessage(toErrorResponse(id, err)));
+  // Every path out of here must post exactly one response: the sender
+  // (`Scanner`) holds a decode slot open until one arrives, so a request that
+  // silently produces none leaks that slot permanently — at the default pool
+  // size of one, that wedges scanning for the rest of the session. The
+  // synchronous work below (`expandLumaToImageData` allocates and constructs
+  // an `ImageData`, either of which can throw on a malformed or huge frame)
+  // sits outside `decodeFrame`'s own promise chain, so it needs its own guard.
+  try {
+    const imageData =
+      'luma' in event.data ? expandLumaToImageData(event.data.luma) : event.data.imageData;
+
+    decoder
+      .decodeFrame(imageData)
+      .then((result) => workerScope.postMessage(toDecodeResponse(id, result)))
+      .catch((err: unknown) => workerScope.postMessage(toErrorResponse(id, err)));
+  } catch (err) {
+    workerScope.postMessage(toErrorResponse(id, err));
+  }
 };

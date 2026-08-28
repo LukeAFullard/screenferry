@@ -586,6 +586,19 @@ camera's actual negotiated resolution live, which matters a lot for Cimbar
 (see its tuning notes on the page, and the Cimbar backend section above).
 Not part of the published package.
 
+`examples/capture-diagnostics.html` checks the **native camera capture
+path** specifically, and is worth running on a real device after any change
+under `src/scan/`. Nothing else covers it: `app.html`'s self-test and the
+whole CI suite fake the camera with `canvas.captureStream()`, which
+produces `BGRA` frames and so only ever exercises `Camera`'s canvas/RGBA
+*fallback*, while real camera hardware produces `NV12`/`I420` and takes the
+native luma path instead. A capture bug that killed real-camera scanning
+after two frames once shipped green through every automated test and
+through the self-test for exactly this reason. The page reports the
+camera's actual pixel format, verifies repeated capture doesn't wedge,
+counts leaked `VideoFrame`s, and confirms the `Scanner` pipeline keeps
+dispatching and stops cleanly.
+
 `examples/` also has narrower single-purpose demos from earlier stages
 (`sender-demo.html`, `receiver-demo.html`, `loopback-demo.html`,
 `scan-worker-check.html`) — same serving instructions, `qrLtBackend` only.
