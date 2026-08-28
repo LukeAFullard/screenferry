@@ -1,5 +1,5 @@
 import { computeQrModules, type QrEncodeOptions } from './encode';
-import { DEFAULT_MODULE_SIZE_PX, MIN_QUIET_ZONE_MODULES } from './raster';
+import { rasterizeQrModules } from './raster';
 
 export interface RenderQrOptions extends QrEncodeOptions {
   /** Pixels per module side. */
@@ -10,47 +10,31 @@ export interface RenderQrOptions extends QrEncodeOptions {
 
 /**
  * Renders `text` (a raw UR part string, unmodified in meaning) as a QR code
- * onto `canvas`, sized to fit exactly. Draws one filled rect per dark
- * module with anti-aliasing disabled — crisp module edges matter for
- * camera decode, pure black/white only, no theming.
+ * onto `canvas`, sized to fit exactly. Rasterizes to a plain RGBA buffer
+ * (`rasterizeQrModules`) and blits it in one `putImageData` call rather than
+ * one `fillRect` per dark module — a QR v40 code has ~15,000 dark modules,
+ * so that was ~15,000 draw calls per frame; crisp module edges still matter
+ * for camera decode, which `rasterizeQrModules`'s pure pixel-buffer
+ * rasterization gives for free (no anti-aliasing to disable).
  */
 export function renderQrToCanvas(
   text: string,
   canvas: HTMLCanvasElement,
   opts?: RenderQrOptions,
 ): void {
-  const { modules, size } = computeQrModules(text, opts);
+  const { modules } = computeQrModules(text, opts);
+  const { data, width, height } = rasterizeQrModules(modules, opts);
 
-  const moduleSizePx = opts?.moduleSizePx ?? DEFAULT_MODULE_SIZE_PX;
-  const quietZoneModules = Math.max(
-    opts?.quietZoneModules ?? MIN_QUIET_ZONE_MODULES,
-    MIN_QUIET_ZONE_MODULES,
-  );
-  const totalModules = size + quietZoneModules * 2;
-  const px = totalModules * moduleSizePx;
-
-  canvas.width = px;
-  canvas.height = px;
+  canvas.width = width;
+  canvas.height = height;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     throw new Error('renderQrToCanvas: failed to acquire a 2D rendering context');
   }
 
-  ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, px, px);
-
-  ctx.fillStyle = '#000000';
-  for (let row = 0; row < size; row++) {
-    for (let col = 0; col < size; col++) {
-      if (!modules[row][col]) continue;
-      ctx.fillRect(
-        (col + quietZoneModules) * moduleSizePx,
-        (row + quietZoneModules) * moduleSizePx,
-        moduleSizePx,
-        moduleSizePx,
-      );
-    }
-  }
+  // `rasterizeQrModules` always allocates a plain `ArrayBuffer`-backed
+  // array (never `SharedArrayBuffer`) — see the analogous cast in
+  // `DisplayDriver.renderImageFrame`.
+  ctx.putImageData(new ImageData(data as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0);
 }

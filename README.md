@@ -224,6 +224,78 @@ frames for denser color-based ones.
   hardware (not just theorized), which is what motivated the mode-cycling,
   camera-constraint, and diagnostic-logging fixes above, plus the two
   below.
+  - **The encode window was 16px too small.** `_cimbare_render()` shakes
+    the rendered symbol by up to ±8px (a jitter libcimbar's own reference
+    encoder always applies, cycling through four offsets, one per frame) —
+    libcimbar's own default window size (`image_size + 16`) exists
+    specifically to leave a border for that shake to move into. This
+    project's encoder was sizing its window to exactly `frameSize`
+    (no border), so on two of every four rendered frames, an 8px strip —
+    including part of a corner anchor — was pushed off the canvas edge.
+    Fixed: the render window is now always `frameSize + 16`, matching
+    libcimbar's own default and giving the symbol a quiet zone too.
+  - **The decoder could lock onto the wrong mode.** `CimbarDecoder`'s
+    mode-cycling (above) locked onto the first candidate mode that
+    returned `extractedLen >= 0` — but `0` means "symbol found and
+    deskewed, zero cells decoded," which a *wrong* mode can also produce
+    (anchor detection/deskew are geometric and largely mode-independent;
+    cell decoding is not). Locking on `0` wedged the decoder onto the
+    wrong mode permanently, and — since `_cimbard_configure_decode` resets
+    the fountain sink on any actual mode change — silently discarded
+    whatever had already been accumulated. Fixed: locking now requires
+    `extractedLen > 0` (an actual decoded chunk).
+  - **The very first rendered frame was blank.** The encode loop called
+    `_cimbare_render()` before `_cimbare_next_frame()`, but `render()` only
+    draws whatever `next_frame()` most recently prepared — right after
+    finalizing the input, nothing had been prepared yet, so the first
+    frame read back was an uninitialized/blank framebuffer. Fixed:
+    `next_frame()` now runs before `render()` each iteration.
+  - **Return codes were never checked.** Both the encoder (`_cimbare_init_encode`,
+    `_cimbare_encode`, `_cimbare_render`, `_cimbare_next_frame`) and decoder
+    (`_cimbard_fountain_decode`'s `-5`, specifically "chunk size doesn't
+    match the configured mode") sides of the C ABI signal real failures via
+    negative return codes that were previously discarded outright. The
+    encoder now throws on a hard failure instead of silently producing
+    unusable frames forever; the decoder logs `-5` distinctly from ordinary
+    "not complete yet."
+  - **No receive-side progress signal.** `CimbarDecoder` didn't implement
+    `BackendDecoder.progress`, so any UI reading it saw a flat 0% for an
+    entire transfer regardless of actual progress — indistinguishable from
+    a completely dead session. It now parses `_cimbard_get_report`'s
+    bracketed per-file progress list after every `_cimbard_fountain_decode`
+    call (the exact scale of the reported values isn't confirmed against
+    this vendored WASM build, so this is a best-effort estimate, not an
+    exact percentage).
+  - **The payload was compressed twice.** screenferry's own envelope
+    (`buildEnvelope`) always gzips; libcimbar's encoder separately
+    zstd-compresses everything it's handed (`_cimbare_configure`'s second
+    argument). Gzipped bytes don't compress further, so the second pass was
+    pure wasted CPU, at a worse ratio than giving zstd the raw bytes
+    directly. `cimbarBackend` now sets `compressesInternally: true`, which
+    `buildEnvelope` respects by skipping its own gzip pass for this backend
+    entirely.
+  - **Native `VideoFrame` capture could hand libcimbar a mismatched
+    buffer.** `Camera.grabNativeFrame()`'s WebCodecs path reported a
+    captured frame's `codedWidth`/`codedHeight`, but `allocationSize()`/
+    `copyTo()` both default to the frame's *visible* rect — on a camera
+    where those differ (e.g. a 1080-tall visible frame inside a
+    1088-tall H.264 macroblock-padded coded frame), the buffer and the
+    reported dimensions desynced, corrupting the chroma-plane offsets
+    libcimbar's raw pixel read assumes. Fixed: the visible rect's own
+    dimensions are reported instead, and each plane's layout is validated
+    as tightly packed before use — falling back to the canvas/RGBA path
+    when it isn't, rather than handing libcimbar a buffer it would
+    misread.
+  - **Known limitation, not fixed: one WASM module instance can't safely
+    serve both a sender and a receiver on the same page.**
+    `_cimbare_configure`/`_cimbard_configure_decode` both write the same
+    single C++-side static config — there's no per-role state. The
+    same-device self-test below runs exactly this same-page loopback, so a
+    receiver's mode-cycling can corrupt whatever a still-in-progress sender
+    is rendering, with no visible symptom beyond "images appear, nothing
+    ever decodes." A real two-party transfer (separate devices/processes)
+    isn't affected — see `src/backends/cimbar/index.ts`'s doc comment on
+    `cimbarBackend` for the full detail.
 - **Frame capture skips the canvas/RGBA round trip when possible.**
   `Camera.grabNativeFrame()` (used by `Scanner`'s `rawFrames` mode) reads
   the camera's *native* pixel format — NV12 or I420 — directly off a
@@ -262,8 +334,10 @@ configured max QR version, ECC L) — the throughput gain is real, on the
 order of 3-4x per frame, once performance on real hardware is confirmed.
 
 `CimbarEncodeOptions.frameSize` lets you render at a resolution other than
-the 1024×1024 default — useful for the performance tuning above. Pass it
-via `encodeToFrames`'s `backendOptions`:
+the 1024×1024 default — useful for the performance tuning above. It's the
+*symbol's* resolution; the actual render window is `frameSize + 16px`,
+matching libcimbar's own default window sizing (see the encode-window fix
+above). Pass it via `encodeToFrames`'s `backendOptions`:
 `encodeToFrames(file, { backend: cimbarBackend, backendOptions: { frameSize: 256 } })`
 (or `{ preferredBackend: 'cimbar', backendOptions: {...} }` in negotiated
 mode) — `backendOptions` is forwarded to `backend.encode()` as-is, in

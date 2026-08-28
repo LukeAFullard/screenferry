@@ -248,15 +248,69 @@ export class Camera {
    * `VideoFrame.format` (e.g. `'RGBA'`/`'BGRA'` from a browser/camera combo
    * that doesn't expose YUV) returns `undefined` so the caller falls back
    * to the canvas/RGBA path instead of guessing at an unsupported layout.
+   *
+   * Per the WebCodecs spec, `allocationSize()`/`copyTo()` both default
+   * their `rect` option to the frame's *visible* rect, not its
+   * `codedWidth`/`codedHeight` -- on cameras where those differ (e.g. a
+   * 1080-tall visible frame inside a 1088-tall H.264 macroblock-padded
+   * coded frame), reporting `codedWidth`/`codedHeight` alongside a buffer
+   * sized for the visible rect desyncs the two, corrupting the chroma-plane
+   * offsets `_cimbard_scan_extract_decode`'s raw `cv::Mat` read assumes.
+   * Report `visibleRect`'s dimensions instead, to match the buffer that was
+   * actually captured.
    */
   private async videoFrameToImageFrame(videoFrame: VideoFrame): Promise<ImageFrame | undefined> {
     const format =
       videoFrame.format === 'NV12' ? 'nv12' : videoFrame.format === 'I420' ? 'i420' : undefined;
     if (!format) return undefined;
 
-    const data = new Uint8Array(videoFrame.allocationSize());
-    await videoFrame.copyTo(data);
+    const rect = videoFrame.visibleRect;
+    if (!rect) return undefined;
+    const { width, height } = rect;
 
-    return { data, width: videoFrame.codedWidth, height: videoFrame.codedHeight, format };
+    const data = new Uint8Array(videoFrame.allocationSize());
+    const planes = await videoFrame.copyTo(data);
+
+    // libcimbar's raw `cv::Mat` read over this buffer assumes each plane is
+    // tightly packed (row stride equals plane width, no gaps between
+    // planes) -- true for a typical capture, but not guaranteed by the
+    // WebCodecs spec. When it isn't (row padding, a driver that pads
+    // differently), fall back to the canvas/RGBA path rather than hand
+    // libcimbar a buffer it will misread.
+    if (!planesArePacked(planes, width, height, format)) return undefined;
+
+    return { data, width, height, format };
   }
+}
+
+/** See `Camera.videoFrameToImageFrame`'s doc comment. */
+function planesArePacked(
+  planes: readonly { offset: number; stride: number }[],
+  width: number,
+  height: number,
+  format: 'nv12' | 'i420',
+): boolean {
+  const chromaWidth = Math.ceil(width / 2);
+  const chromaHeight = Math.ceil(height / 2);
+
+  if (format === 'nv12') {
+    if (planes.length !== 2) return false;
+    const [y, uv] = planes;
+    return (
+      y.offset === 0 && y.stride === width && uv.offset === width * height && uv.stride === width
+    );
+  }
+
+  if (planes.length !== 3) return false;
+  const [y, u, v] = planes;
+  const uOffset = width * height;
+  const vOffset = uOffset + chromaWidth * chromaHeight;
+  return (
+    y.offset === 0 &&
+    y.stride === width &&
+    u.offset === uOffset &&
+    u.stride === chromaWidth &&
+    v.offset === vOffset &&
+    v.stride === chromaWidth
+  );
 }

@@ -32,6 +32,8 @@ export class DisplayDriver {
   private frameIndex = 0;
   private lastFrameTime = 0;
   private visibilityListener: (() => void) | undefined;
+  /** Guards against a slow render (e.g. Cimbar's WebGL readback) overlapping the next tick's render on the same canvas — see `tick`. */
+  private renderInFlight = false;
 
   constructor(
     private readonly source: AsyncIterable<Frame>,
@@ -92,15 +94,23 @@ export class DisplayDriver {
   private tick(now: number): void {
     if (!this.running) return;
 
+    // Scheduled immediately, before doing any render work below -- awaiting
+    // the render before scheduling the next `rAF` (as this used to, via
+    // `renderNextFrame().finally()`) adds a full extra `rAF` of latency
+    // after every frame, compounding badly over a multi-minute transfer.
+    this.scheduleNextTick();
+
     const intervalMs = 1000 / this.fps;
-    if (now - this.lastFrameTime < intervalMs) {
-      this.scheduleNextTick();
-      return;
-    }
+    if (now - this.lastFrameTime < intervalMs) return;
+    // A previous render (e.g. Cimbar's WebGL readback) is still in flight —
+    // skip this tick rather than starting a second concurrent render onto
+    // the same canvas/GL context; the next tick will pick it up.
+    if (this.renderInFlight) return;
     this.lastFrameTime = now;
 
+    this.renderInFlight = true;
     void this.renderNextFrame().finally(() => {
-      if (this.running) this.scheduleNextTick();
+      this.renderInFlight = false;
     });
   }
 

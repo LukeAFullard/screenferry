@@ -45,7 +45,11 @@ const PIXEL_FORMAT_NV12 = 12;
 const PIXEL_FORMAT_I420 = 420;
 
 export interface CimbarEncodeOptions {
-  /** Encode/render resolution (square). Defaults to `DEFAULT_FRAME_SIZE`. */
+  /**
+   * Symbol resolution (square). Defaults to `DEFAULT_FRAME_SIZE`. The
+   * actual render window/canvas is `frameSize + WINDOW_MARGIN_PX` — see
+   * `initEncoder` — matching libcimbar's own default window sizing.
+   */
   frameSize?: number;
   /**
    * libcimbar encode mode (`_cimbare_configure`'s first argument). Defaults
@@ -56,6 +60,17 @@ export interface CimbarEncodeOptions {
    * it cycles through candidates per frame until one decodes.
    */
   mode?: number;
+  /**
+   * zstd compression level (0-22) for libcimbar's own internal compression
+   * (`_cimbare_configure`'s second argument) — out of that range (the
+   * default, matching every prior call site's hardcoded `-1`) selects
+   * libcimbar's own default level. `cimbarBackend` skips screenferry's own
+   * gzip pass for this backend (see `compressesInternally` on the exported
+   * `TransferBackend`) since gzipped bytes are incompressible and would
+   * make this internal pass pure wasted CPU, so this is the only
+   * compression the payload gets.
+   */
+  compressionLevel?: number;
 }
 
 /**
@@ -135,12 +150,30 @@ let encoderReady:
     }>
   | undefined;
 
+/**
+ * libcimbar's own `cimbare_init_window` sizes its window as
+ * `image_size + 16` when given no explicit size — that extra 16px isn't
+ * decoration. `cimbare_render()` calls `show()` followed by `shake()`,
+ * which offsets the rendered symbol by up to ±8px (cycling through four
+ * positions, one per rendered frame) as a texture-coordinate shift.
+ * `CimbWriter` centres the symbol inside whatever canvas size it's given,
+ * so a window sized to exactly `frameSize` (the symbol's own resolution)
+ * leaves no border to absorb that shake: on two of every four frames, an
+ * 8px strip — including part of a corner anchor — is pushed off the edge
+ * and `GL_CLAMP_TO_EDGE` smears the opposite side in to fill it. Sizing
+ * the window 16px larger than the symbol (matching libcimbar's own
+ * default) restores the border the shake needs, and doubles as a quiet
+ * zone around the symbol.
+ */
+const WINDOW_MARGIN_PX = 16;
+
 function initEncoder(frameSize: number) {
   encoderReady ??= (async () => {
     const module = await loadCimbarModule();
-    const canvas = new OffscreenCanvas(frameSize, frameSize);
+    const windowSize = frameSize + WINDOW_MARGIN_PX;
+    const canvas = new OffscreenCanvas(windowSize, windowSize);
     module.canvas = canvas;
-    module._cimbare_init_window(frameSize, frameSize);
+    module._cimbare_init_window(windowSize, windowSize);
     const gl = getWebGlContext(canvas);
     logGlRenderer(gl);
     return { module, canvas, gl };
@@ -184,6 +217,23 @@ function logGlRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): void
  * may not reliably find tile boundaries; this project's own envelope
  * overhead plus a normal file easily clears that in practice).
  *
+ * **Known limitation: one sender and one receiver can't safely share a
+ * module instance.** `loadCimbarModule` loads the WASM binary once per
+ * process, and `_cimbare_configure`/`_cimbard_configure_decode` both write
+ * the same single C++-side `Config::active_conf()` (see `module.ts`'s doc
+ * comments on those two exports) — there's no per-role state. Running a
+ * sender's still-in-progress `encode()` generator and a receiver's
+ * `CimbarDecoder` in the same page/thread means the receiver's per-frame
+ * mode-cycling (`_cimbard_configure_decode`) can clobber the encoder's
+ * config between frames, corrupting everything it renders from that point
+ * on — with no visible symptom beyond "images appear, nothing ever
+ * decodes." `examples/app.html`'s cimbar section runs this exact
+ * same-page loopback for convenience; its "pin cimbar" checkbox does not
+ * work around this (it only skips header-frame negotiation, not the
+ * shared module instance). A real two-party transfer (a phone camera
+ * receiving from a laptop screen, as this backend is designed for) uses
+ * two separate WASM module instances/processes and isn't affected.
+ *
  * `Frame` for this backend is rendered pixel data (`ImageFrame`), not a
  * string — `DisplayDriver` and `Scanner` both need to be told to expect
  * that (see their respective option docs) when using this backend instead
@@ -198,11 +248,18 @@ function logGlRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): void
 export const cimbarBackend: TransferBackend<ImageFrame> = {
   id: 'cimbar',
 
+  // libcimbar's own encoder already zstd-compresses (`_cimbare_configure`'s
+  // second argument) — screenferry's usual gzip pass in `buildEnvelope`
+  // would be pure wasted CPU on top of it (gzipped bytes don't compress
+  // further) and gives up the better ratio zstd would get on the raw
+  // bytes, so `buildEnvelope` skips its own compression for this backend.
+  compressesInternally: true,
+
   async *encode(bytes: Uint8Array, opts?: CimbarEncodeOptions): AsyncIterable<ImageFrame> {
     const frameSize = opts?.frameSize ?? DEFAULT_FRAME_SIZE;
     const mode = opts?.mode ?? DEFAULT_MODE;
     const { module, canvas, gl } = await initEncoder(frameSize);
-    module._cimbare_configure(mode, -1);
+    module._cimbare_configure(mode, opts?.compressionLevel ?? -1);
 
     // Cimbar's own encoder wants a filename (it has no envelope layer of
     // its own) — irrelevant here since `buildEnvelope` already carries the
@@ -211,7 +268,10 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
     const filenamePtr = module._malloc(filenameBytes.length);
     try {
       module.HEAPU8.set(filenameBytes, filenamePtr);
-      module._cimbare_init_encode(filenamePtr, filenameBytes.length, -1);
+      const initResult = module._cimbare_init_encode(filenamePtr, filenameBytes.length, -1);
+      if (initResult < 0) {
+        throw new Error(`screenferry cimbarBackend: _cimbare_init_encode failed (${initResult})`);
+      }
     } finally {
       module._free(filenamePtr);
     }
@@ -223,18 +283,45 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
       const chunk = bytes.subarray(offset, offset + chunkSize);
       const view = chunkBuffer.ensure(Math.max(chunk.length, 1));
       view.set(chunk);
-      module._cimbare_encode(chunkBuffer.byteOffset, chunk.length);
+      const encodeResult = module._cimbare_encode(chunkBuffer.byteOffset, chunk.length);
+      if (encodeResult < 0) {
+        throw new Error(`screenferry cimbarBackend: _cimbare_encode failed (${encodeResult})`);
+      }
     }
     // A trailing zero-length call flushes/finalizes — mirrors the reference
     // `importFile`'s final `encode_bytes(nullBuff)` once the file is read.
-    module._cimbare_encode(chunkBuffer.byteOffset, 0);
+    const finalizeResult = module._cimbare_encode(chunkBuffer.byteOffset, 0);
+    if (finalizeResult < 0) {
+      throw new Error(
+        `screenferry cimbarBackend: _cimbare_encode (finalize) failed (${finalizeResult})`,
+      );
+    }
 
     // Rateless, like the LT backend: keeps rendering fresh frames forever.
     // The caller (`DisplayDriver`, a test harness, ...) decides when it has
     // sent enough and stops pulling from this generator.
+    //
+    // `next_frame()` must run *before* `render()`: `render()` only draws
+    // whatever `next_frame()` most recently prepared, and right after
+    // finalizing above there's nothing prepared yet (the finalizing
+    // `encode()` call clears it) — rendering first would yield one blank
+    // frame (an empty/garbage framebuffer) before the real data starts.
     for (;;) {
-      module._cimbare_render();
-      module._cimbare_next_frame(0);
+      const frameNum = module._cimbare_next_frame(0);
+      if (frameNum < 0) {
+        throw new Error(`screenferry cimbarBackend: _cimbare_next_frame failed (${frameNum})`);
+      }
+      const renderResult = module._cimbare_render();
+      if (renderResult < 0) {
+        throw new Error(`screenferry cimbarBackend: _cimbare_render failed (${renderResult})`);
+      }
+      if (renderResult === 0) {
+        // No window/no encoder stream to draw — shouldn't happen right
+        // after a successful `next_frame()`, but isn't fatal: the canvas
+        // still holds the previously rendered frame, so warn and keep
+        // going rather than tearing down an otherwise-working session.
+        console.warn('[screenferry] cimbar encoder: _cimbare_render had nothing to draw');
+      }
       yield readCanvasPixels(canvas, gl);
     }
   },
@@ -286,8 +373,15 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
   private readonly extractStats = new Map<number, number>();
   private statsWindowStart = 0;
 
+  /** See `updateProgress`'s doc comment. */
+  private lastProgress = 0;
+
   get isComplete(): boolean {
     return this.result !== undefined;
+  }
+
+  get progress(): number {
+    return this.isComplete ? 1 : this.lastProgress;
   }
 
   getResult(): Uint8Array {
@@ -379,10 +473,16 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
 
     this.recordExtractStat(extractedLen);
 
-    // `extractedLen >= 0` means this frame was readable under
-    // `candidateMode` (0 = found/deskewed but no cells; >0 = got a chunk)
-    // -- lock onto it so every later frame skips the cycling entirely.
-    if (extractedLen >= 0 && this.lockedMode === undefined) {
+    // Only `extractedLen > 0` (a real chunk, not just a found-and-deskewed
+    // symbol) is trustworthy evidence that `candidateMode` is the sender's
+    // actual mode -- anchor detection and deskew are geometric and largely
+    // mode-independent, so a *wrong* candidate can still return `0`
+    // (symbol found, zero cells decoded — see below). Locking on `0` would
+    // wedge the decoder onto the wrong mode permanently (and, since
+    // `_cimbard_configure_decode` resets the fountain sink on any actual
+    // mode change, silently discard whatever this session had already
+    // accumulated).
+    if (extractedLen > 0 && this.lockedMode === undefined) {
       this.lockedMode = candidateMode;
     }
 
@@ -392,6 +492,7 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
       // (identical to the < 0 case from the caller's perspective); logging
       // it is what makes the two failure modes distinguishable at all.
       this.reportError();
+      if (this.lockedMode === undefined) this.modeAttempt++;
       return;
     }
     if (extractedLen < 0) {
@@ -406,8 +507,19 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
 
     // Stage 2: accumulate this chunk into the fountain decoder. A C
     // int64_t comes back as a JS bigint; > 0 once a complete file has
-    // been reconstructed, with the file's id in the low 32 bits.
+    // been reconstructed, with the file's id in the low 32 bits. `-5`
+    // specifically means this chunk's length didn't match the configured
+    // mode's expected chunk size — distinct from "not complete yet" (any
+    // other `<= 0`), and a strong signal `candidateMode` is wrong (or the
+    // extraction above was itself bogus).
     const decodeRes = module._cimbard_fountain_decode(chunkBuffer.byteOffset, extractedLen);
+    this.updateProgress();
+    if (decodeRes === -5n) {
+      console.warn(
+        '[screenferry] cimbar fountain_decode: chunk size mismatch (-5) — likely a wrong candidate mode',
+      );
+      return;
+    }
     if (decodeRes <= 0n) return;
 
     const fileId = Number(decodeRes & 0xffffffffn);
@@ -443,17 +555,53 @@ class CimbarDecoder implements BackendDecoder<ImageFrame> {
     return out;
   }
 
-  private reportError(): void {
+  /** Raw text from `_cimbard_get_report` — `undefined` if the module isn't loaded yet or there was nothing to report. */
+  private readReport(): string | undefined {
     const module = this.module;
-    if (!module || !this.errorBuffer) return;
-    const errView = this.errorBuffer.ensure(256);
-    const errLen = module._cimbard_get_report(this.errorBuffer.byteOffset, errView.length);
-    if (errLen > 0) {
-      console.warn(
-        '[screenferry] cimbar decode error:',
-        new TextDecoder().decode(errView.subarray(0, errLen)),
-      );
-    }
+    if (!module || !this.errorBuffer) return undefined;
+    const view = this.errorBuffer.ensure(256);
+    const len = module._cimbard_get_report(this.errorBuffer.byteOffset, view.length);
+    if (len <= 0) return undefined;
+    return new TextDecoder().decode(view.subarray(0, len));
+  }
+
+  private reportError(): void {
+    const report = this.readReport();
+    if (report) console.warn('[screenferry] cimbar decode error:', report);
+  }
+
+  /**
+   * Populates `progress` from `_cimbard_get_report`, called right after
+   * `_cimbard_fountain_decode` — per libcimbar's own `cimbard_recv_js.cpp`,
+   * that's the only point `_reporting` holds the fountain sink's bracketed
+   * per-file progress list (`"[ 0.42, ... ]"`) rather than the unrelated
+   * `"sce: <ms>, imgdec: <ms>"` per-frame timing string it holds before any
+   * chunk has been accepted — recognized here by the `[...]` wrapper, which
+   * only the progress form has. Without this, `progress` silently reads 0%
+   * for an entire transfer no matter how far along it actually is.
+   *
+   * The exact units of each reported value aren't confirmed against this
+   * vendored WASM build (no access to the wirehair sink's `get_progress()`
+   * source) — treated as a 0-1 ratio, or a percentage (divided by 100) if
+   * greater than 1, and the largest of a multi-file report is used as this
+   * transfer's overall progress. Best-effort: a wrong scale here degrades
+   * to a misleading percentage, not a functional failure.
+   */
+  private updateProgress(): void {
+    const report = this.readReport();
+    if (!report) return;
+
+    const match = /\[([^\]]*)\]/.exec(report);
+    if (!match) return;
+
+    const values = match[1]
+      .split(',')
+      .map((v) => Number.parseFloat(v.trim()))
+      .filter((v) => Number.isFinite(v));
+    if (values.length === 0) return;
+
+    const raw = Math.max(...values);
+    this.lastProgress = Math.min(1, raw > 1 ? raw / 100 : raw);
   }
 
   /**

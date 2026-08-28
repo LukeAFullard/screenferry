@@ -10700,19 +10700,37 @@ function pi(e, t) {
 		version: n.version
 	};
 }
+function mi(e, t) {
+	let n = t?.moduleSizePx ?? 4, r = Math.max(t?.quietZoneModules ?? 4, 4), i = e.length, a = (i + r * 2) * n, o = new Uint8ClampedArray(a * a * 4).fill(255);
+	for (let t = 0; t < i; t++) for (let s = 0; s < i; s++) {
+		if (!e[t][s]) continue;
+		let i = (s + r) * n, c = (t + r) * n;
+		for (let e = 0; e < n; e++) {
+			let t = ((c + e) * a + i) * 4;
+			for (let e = 0; e < n; e++) {
+				let n = t + e * 4;
+				o[n] = 0, o[n + 1] = 0, o[n + 2] = 0, o[n + 3] = 255;
+			}
+		}
+	}
+	return {
+		data: o,
+		width: a,
+		height: a
+	};
+}
 //#endregion
 //#region src/backends/qr-lt/render.ts
-function mi(e, t, n) {
-	let { modules: r, size: i } = pi(e, n), a = n?.moduleSizePx ?? 4, o = Math.max(n?.quietZoneModules ?? 4, 4), s = (i + o * 2) * a;
-	t.width = s, t.height = s;
-	let c = t.getContext("2d");
-	if (!c) throw Error("renderQrToCanvas: failed to acquire a 2D rendering context");
-	c.imageSmoothingEnabled = !1, c.fillStyle = "#ffffff", c.fillRect(0, 0, s, s), c.fillStyle = "#000000";
-	for (let e = 0; e < i; e++) for (let t = 0; t < i; t++) r[e][t] && c.fillRect((t + o) * a, (e + o) * a, a, a);
+function hi(e, t, n) {
+	let { modules: r } = pi(e, n), { data: i, width: a, height: o } = mi(r, n);
+	t.width = a, t.height = o;
+	let s = t.getContext("2d");
+	if (!s) throw Error("renderQrToCanvas: failed to acquire a 2D rendering context");
+	s.putImageData(new ImageData(i, a, o), 0, 0);
 }
 //#endregion
 //#region src/backends/qr-lt/index.ts
-var hi = class {
+var gi = class {
 	constructor() {
 		this.decoder = new wr();
 	}
@@ -10728,33 +10746,37 @@ var hi = class {
 	getResult() {
 		return this.decoder.getResult();
 	}
-}, gi = {
+}, _i = {
 	id: "qr-lt",
 	encode(e, t) {
 		return Cr(e, t);
 	},
 	createDecoder() {
-		return new hi();
+		return new gi();
 	}
 };
 //#endregion
 //#region src/codec/transfer.ts
-async function _i(e, t) {
-	let n = await _e(e), r = de(e), i = r.length < e.length, a = i ? r : e;
+async function vi(e, t, n) {
+	let r = await _e(e), i = !1, a = e;
+	if (!n?.skipCompression) {
+		let t = de(e);
+		i = t.length < e.length, a = i ? t : e;
+	}
 	return me({
 		filename: t.filename,
 		mimeType: t.mimeType,
 		size: e.length,
-		sha256: n,
+		sha256: r,
 		compressed: i
 	}, a);
 }
-async function vi(e, t, n) {
-	let r = await _i(e, t);
-	return (n?.backend ?? gi).encode(r, n?.backendOptions ?? { maxFragmentLength: n?.maxFragmentLength });
+async function yi(e, t, n) {
+	let r = n?.backend ?? _i, i = await vi(e, t, { skipCompression: r.compressesInternally });
+	return r.encode(i, n?.backendOptions ?? { maxFragmentLength: n?.maxFragmentLength });
 }
-var yi = class {
-	constructor(e = gi) {
+var bi = class {
+	constructor(e = _i) {
 		this.decoder = e.createDecoder();
 	}
 	receivePart(e) {
@@ -10767,10 +10789,10 @@ var yi = class {
 		return this.decoder.progress ?? 0;
 	}
 	async getResult() {
-		return bi(this.decoder.getResult());
+		return xi(this.decoder.getResult());
 	}
 };
-async function bi(e) {
+async function xi(e) {
 	let { meta: t, payload: n } = he(e), r = t.compressed ? fe(n) : new Uint8Array(n), i = await _e(r);
 	if (i !== t.sha256) throw new ge(`Checksum mismatch: expected ${t.sha256}, got ${i}`);
 	return {
@@ -10781,7 +10803,7 @@ async function bi(e) {
 }
 //#endregion
 //#region src/scan/camera.ts
-var xi = 1920, Si = 1080, Ci = class e {
+var Si = 1920, Ci = 1080, wi = class e {
 	constructor(t) {
 		this.ownsVideoElement = t === void 0, this.video = t ?? e.createHiddenVideoElement(), this.canvas = document.createElement("canvas");
 		let n = this.canvas.getContext("2d", { willReadFrequently: !0 });
@@ -10795,8 +10817,8 @@ var xi = 1920, Si = 1080, Ci = class e {
 	async start(e) {
 		let t = {
 			facingMode: e?.facingMode ?? "environment",
-			width: { ideal: e?.width ?? xi },
-			height: { ideal: e?.height ?? Si },
+			width: { ideal: e?.width ?? Si },
+			height: { ideal: e?.height ?? Ci },
 			aspectRatio: matchMedia("all and (orientation: landscape)").matches ? 16 / 9 : 9 / 16,
 			frameRate: { ideal: 30 }
 		};
@@ -10870,15 +10892,31 @@ var xi = 1920, Si = 1080, Ci = class e {
 	async videoFrameToImageFrame(e) {
 		let t = e.format === "NV12" ? "nv12" : e.format === "I420" ? "i420" : void 0;
 		if (!t) return;
-		let n = new Uint8Array(e.allocationSize());
-		return await e.copyTo(n), {
-			data: n,
-			width: e.codedWidth,
-			height: e.codedHeight,
+		let n = e.visibleRect;
+		if (!n) return;
+		let { width: r, height: i } = n, a = new Uint8Array(e.allocationSize());
+		if (Ti(await e.copyTo(a), r, i, t)) return {
+			data: a,
+			width: r,
+			height: i,
 			format: t
 		};
 	}
-}, wi = 20, Ti = class {
+};
+function Ti(e, t, n, r) {
+	let i = Math.ceil(t / 2), a = Math.ceil(n / 2);
+	if (r === "nv12") {
+		if (e.length !== 2) return !1;
+		let [r, i] = e;
+		return r.offset === 0 && r.stride === t && i.offset === t * n && i.stride === t;
+	}
+	if (e.length !== 3) return !1;
+	let [o, s, c] = e, l = t * n, u = l + i * a;
+	return o.offset === 0 && o.stride === t && s.offset === l && s.stride === i && c.offset === u && c.stride === i;
+}
+//#endregion
+//#region src/scan/index.ts
+var Ei = 20, Di = class {
 	constructor() {
 		this.nextRequestId = 0, this.pendingDecode = !1, this.pendingRawFrame = !1, this.callbacks = /* @__PURE__ */ new Set();
 	}
@@ -10889,8 +10927,8 @@ var xi = 1920, Si = 1080, Ci = class e {
 		return this.camera?.resolution;
 	}
 	async start(e, t) {
-		this.stop(), this.camera = new Ci(e), await this.camera.start(t);
-		let n = t?.scanHz ?? wi;
+		this.stop(), this.camera = new wi(e), await this.camera.start(t);
+		let n = t?.scanHz ?? Ei;
 		if (t?.rawFrames) {
 			this.intervalHandle = setInterval(() => this.tickRaw(), 1e3 / n);
 			return;
@@ -10931,9 +10969,9 @@ var xi = 1920, Si = 1080, Ci = class e {
 			this.pendingRawFrame = !1;
 		});
 	}
-}, Ei;
-function Di() {
-	return Ei || (Ei = (async () => {
+}, Oi;
+function ki() {
+	return Oi || (Oi = (async () => {
 		if (typeof document > "u") throw Error("screenferry cimbarBackend: requires a DOM (`document`) to load its WASM module — must run on the main thread, not a worker");
 		let [{ default: e }, { default: t }] = await Promise.all([import("./cimbar-BfAA118n.js"), import("./cimbar-uAgn5oEV.js")]);
 		return new Promise((n, r) => {
@@ -10944,11 +10982,11 @@ function Di() {
 			let i = document.createElement("script");
 			i.src = t, i.onerror = () => r(/* @__PURE__ */ Error("screenferry cimbarBackend: failed to load the vendored WASM glue script")), document.head.appendChild(i);
 		});
-	})(), Ei);
+	})(), Oi);
 }
 //#endregion
 //#region src/backends/cimbar/index.ts
-var Oi = 68, ki = 1024, Ai = 4, ji = 12, Mi = 420, Ni = class {
+var Ai = 68, ji = 1024, Mi = 4, Ni = 12, Pi = 420, Fi = class {
 	constructor(e) {
 		this.module = e, this.ptr = 0;
 	}
@@ -10959,12 +10997,12 @@ var Oi = 68, ki = 1024, Ai = 4, ji = 12, Mi = 420, Ni = class {
 		return this.ptr;
 	}
 };
-function Pi(e) {
+function Ii(e) {
 	let t = e.getContext("webgl2") ?? e.getContext("webgl");
 	if (!t) throw Error("screenferry cimbarBackend: could not acquire a WebGL context on the offscreen encode canvas");
 	return t;
 }
-function Fi(e, t) {
+function Li(e, t) {
 	let { width: n, height: r } = e, i = new Uint8Array(n * r * 4);
 	t.readPixels(0, 0, n, r, t.RGBA, t.UNSIGNED_BYTE, i);
 	let a = n * 4, o = new Uint8Array(i.length);
@@ -10978,47 +11016,60 @@ function Fi(e, t) {
 		height: r
 	};
 }
-var Ii;
-function Li(e) {
-	return Ii ??= (async () => {
-		let t = await Di(), n = new OffscreenCanvas(e, e);
-		t.canvas = n, t._cimbare_init_window(e, e);
-		let r = Pi(n);
-		return Ri(r), {
+var Ri, zi = 16;
+function Bi(e) {
+	return Ri ??= (async () => {
+		let t = await ki(), n = e + zi, r = new OffscreenCanvas(n, n);
+		t.canvas = r, t._cimbare_init_window(n, n);
+		let i = Ii(r);
+		return Vi(i), {
 			module: t,
-			canvas: n,
-			gl: r
+			canvas: r,
+			gl: i
 		};
-	})(), Ii;
+	})(), Ri;
 }
-function Ri(e) {
+function Vi(e) {
 	let t = e.getExtension("WEBGL_debug_renderer_info");
 	t && console.info("[screenferry] cimbar GPU renderer:", e.getParameter(t.UNMASKED_RENDERER_WEBGL));
 }
-var zi = {
+var Hi = {
 	id: "cimbar",
+	compressesInternally: !0,
 	async *encode(e, t) {
-		let n = t?.frameSize ?? ki, r = t?.mode ?? Oi, { module: i, canvas: a, gl: o } = await Li(n);
-		i._cimbare_configure(r, -1);
+		let n = t?.frameSize ?? ji, r = t?.mode ?? Ai, { module: i, canvas: a, gl: o } = await Bi(n);
+		i._cimbare_configure(r, t?.compressionLevel ?? -1);
 		let s = new TextEncoder().encode("data.bin"), c = i._malloc(s.length);
 		try {
-			i.HEAPU8.set(s, c), i._cimbare_init_encode(c, s.length, -1);
+			i.HEAPU8.set(s, c);
+			let e = i._cimbare_init_encode(c, s.length, -1);
+			if (e < 0) throw Error(`screenferry cimbarBackend: _cimbare_init_encode failed (${e})`);
 		} finally {
 			i._free(c);
 		}
-		let l = i._cimbare_encode_bufsize(), u = new Ni(i);
+		let l = i._cimbare_encode_bufsize(), u = new Fi(i);
 		for (let t = 0; t < e.length; t += l) {
 			let n = e.subarray(t, t + l);
-			u.ensure(Math.max(n.length, 1)).set(n), i._cimbare_encode(u.byteOffset, n.length);
+			u.ensure(Math.max(n.length, 1)).set(n);
+			let r = i._cimbare_encode(u.byteOffset, n.length);
+			if (r < 0) throw Error(`screenferry cimbarBackend: _cimbare_encode failed (${r})`);
 		}
-		for (i._cimbare_encode(u.byteOffset, 0);;) i._cimbare_render(), i._cimbare_next_frame(0), yield Fi(a, o);
+		let d = i._cimbare_encode(u.byteOffset, 0);
+		if (d < 0) throw Error(`screenferry cimbarBackend: _cimbare_encode (finalize) failed (${d})`);
+		for (;;) {
+			let e = i._cimbare_next_frame(0);
+			if (e < 0) throw Error(`screenferry cimbarBackend: _cimbare_next_frame failed (${e})`);
+			let t = i._cimbare_render();
+			if (t < 0) throw Error(`screenferry cimbarBackend: _cimbare_render failed (${t})`);
+			t === 0 && console.warn("[screenferry] cimbar encoder: _cimbare_render had nothing to draw"), yield Li(a, o);
+		}
 	},
 	createDecoder() {
-		return new Bi();
+		return new Ui();
 	}
-}, Bi = class e {
+}, Ui = class e {
 	constructor() {
-		this.pending = [], this.loading = !1, this.modeAttempt = 0, this.extractStats = /* @__PURE__ */ new Map(), this.statsWindowStart = 0;
+		this.pending = [], this.loading = !1, this.modeAttempt = 0, this.extractStats = /* @__PURE__ */ new Map(), this.statsWindowStart = 0, this.lastProgress = 0;
 	}
 	static {
 		this.CANDIDATE_MODES = [
@@ -11031,6 +11082,9 @@ var zi = {
 	get isComplete() {
 		return this.result !== void 0;
 	}
+	get progress() {
+		return this.isComplete ? 1 : this.lastProgress;
+	}
 	getResult() {
 		if (!this.result) throw Error("CimbarDecoder: cannot get result before decoding is complete");
 		return this.result;
@@ -11038,8 +11092,8 @@ var zi = {
 	addFrame(e) {
 		if (!this.isComplete) {
 			if (!this.module) {
-				this.pending.push(e), this.loading || (this.loading = !0, Di().then((e) => {
-					this.module = e, this.imgBuffer = new Ni(e), this.chunkBuffer = new Ni(e), this.decompressBuffer = new Ni(e), this.errorBuffer = new Ni(e), this.drainPending();
+				this.pending.push(e), this.loading || (this.loading = !0, ki().then((e) => {
+					this.module = e, this.imgBuffer = new Fi(e), this.chunkBuffer = new Fi(e), this.decompressBuffer = new Fi(e), this.errorBuffer = new Fi(e), this.drainPending();
 				}));
 				return;
 			}
@@ -11057,9 +11111,9 @@ var zi = {
 		if (!n || !r || !i) return;
 		let a = this.lockedMode ?? e.CANDIDATE_MODES[this.modeAttempt % e.CANDIDATE_MODES.length];
 		this.lockedMode === void 0 && n._cimbard_configure_decode(a), r.ensure(t.data.length).set(t.data);
-		let o = n._cimbard_get_bufsize(), s = i.ensure(o), c = t.format === "nv12" ? ji : t.format === "i420" ? Mi : Ai, l = n._cimbard_scan_extract_decode(r.byteOffset, t.width, t.height, c, i.byteOffset, s.length);
-		if (this.recordExtractStat(l), l >= 0 && this.lockedMode === void 0 && (this.lockedMode = a), l === 0) {
-			this.reportError();
+		let o = n._cimbard_get_bufsize(), s = i.ensure(o), c = t.format === "nv12" ? Ni : t.format === "i420" ? Pi : Mi, l = n._cimbard_scan_extract_decode(r.byteOffset, t.width, t.height, c, i.byteOffset, s.length);
+		if (this.recordExtractStat(l), l > 0 && this.lockedMode === void 0 && (this.lockedMode = a), l === 0) {
+			this.reportError(), this.lockedMode === void 0 && this.modeAttempt++;
 			return;
 		}
 		if (l < 0) {
@@ -11067,6 +11121,10 @@ var zi = {
 			return;
 		}
 		let u = n._cimbard_fountain_decode(i.byteOffset, l);
+		if (this.updateProgress(), u === -5n) {
+			console.warn("[screenferry] cimbar fountain_decode: chunk size mismatch (-5) — likely a wrong candidate mode");
+			return;
+		}
 		if (u <= 0n) return;
 		let d = Number(u & 4294967295n);
 		this.result = this.readDecompressedFile(d);
@@ -11084,11 +11142,25 @@ var zi = {
 		for (let e of a) s.set(e, c), c += e.length;
 		return s;
 	}
-	reportError() {
+	readReport() {
 		let e = this.module;
 		if (!e || !this.errorBuffer) return;
 		let t = this.errorBuffer.ensure(256), n = e._cimbard_get_report(this.errorBuffer.byteOffset, t.length);
-		n > 0 && console.warn("[screenferry] cimbar decode error:", new TextDecoder().decode(t.subarray(0, n)));
+		if (!(n <= 0)) return new TextDecoder().decode(t.subarray(0, n));
+	}
+	reportError() {
+		let e = this.readReport();
+		e && console.warn("[screenferry] cimbar decode error:", e);
+	}
+	updateProgress() {
+		let e = this.readReport();
+		if (!e) return;
+		let t = /\[([^\]]*)\]/.exec(e);
+		if (!t) return;
+		let n = t[1].split(",").map((e) => Number.parseFloat(e.trim())).filter((e) => Number.isFinite(e));
+		if (n.length === 0) return;
+		let r = Math.max(...n);
+		this.lastProgress = Math.min(1, r > 1 ? r / 100 : r);
 	}
 	recordExtractStat(e) {
 		let t = e > 0 ? Infinity : e;
@@ -11098,36 +11170,36 @@ var zi = {
 		let r = [...this.extractStats.entries()].sort(([e], [t]) => e - t).map(([e, t]) => `${e === Infinity ? ">0" : e}=${t}`).join(", ");
 		console.debug(`[screenferry] cimbar extractedLen outcomes (last ~1s): ${r}`), this.extractStats.clear(), this.statsWindowStart = n;
 	}
-}, Vi = {
-	"qr-lt": gi,
-	cimbar: zi
-}, Hi = "sf1:backend=";
-function Ui(e) {
-	return `${Hi}${e}`;
+}, Wi = {
+	"qr-lt": _i,
+	cimbar: Hi
+}, Gi = "sf1:backend=";
+function Ki(e) {
+	return `${Gi}${e}`;
 }
-function Wi(e) {
+function qi(e) {
 	if (typeof e != "string") return;
 	let t = e.toLowerCase();
-	if (t.startsWith(Hi)) return t.slice(12);
+	if (t.startsWith(Gi)) return t.slice(12);
 }
-function Gi(e) {
-	return Object.prototype.hasOwnProperty.call(Vi, e) ? Vi[e] : void 0;
+function Ji(e) {
+	return Object.prototype.hasOwnProperty.call(Wi, e) ? Wi[e] : void 0;
 }
-async function Ki() {
+async function Yi() {
 	try {
-		return await Di(), !0;
+		return await ki(), !0;
 	} catch {
 		return !1;
 	}
 }
-async function qi(e, t = Ki) {
-	return e === "qr-lt" ? gi : e === "cimbar" || await t() ? zi : gi;
+async function Xi(e, t = Yi) {
+	return e === "qr-lt" ? _i : e === "cimbar" || await t() ? Hi : _i;
 }
 //#endregion
 //#region src/backends/display-driver.ts
-var Ji = 10, Yi = class {
+var Zi = 10, Qi = class {
 	constructor(e, t, n) {
-		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.fps = n?.fps ?? Ji, this.onFrameSent = n?.onFrameSent;
+		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? Zi, this.onFrameSent = n?.onFrameSent;
 	}
 	start() {
 		this.running || (this.running = !0, this.iterator = this.source[Symbol.asyncIterator](), this.lastFrameTime = 0, this.visibilityListener = () => {
@@ -11145,19 +11217,16 @@ var Ji = 10, Yi = class {
 	}
 	tick(e) {
 		if (!this.running) return;
+		this.scheduleNextTick();
 		let t = 1e3 / this.fps;
-		if (e - this.lastFrameTime < t) {
-			this.scheduleNextTick();
-			return;
-		}
-		this.lastFrameTime = e, this.renderNextFrame().finally(() => {
-			this.running && this.scheduleNextTick();
-		});
+		e - this.lastFrameTime < t || this.renderInFlight || (this.lastFrameTime = e, this.renderInFlight = !0, this.renderNextFrame().finally(() => {
+			this.renderInFlight = !1;
+		}));
 	}
 	async renderNextFrame() {
 		if (!this.iterator) return;
 		let { value: e, done: t } = await this.iterator.next();
-		t || e === void 0 || !this.running || (typeof e == "string" ? mi(e, this.canvas, this.opts) : this.renderImageFrame(e), this.onFrameSent?.(this.frameIndex), this.frameIndex++);
+		t || e === void 0 || !this.running || (typeof e == "string" ? hi(e, this.canvas, this.opts) : this.renderImageFrame(e), this.onFrameSent?.(this.frameIndex), this.frameIndex++);
 	}
 	renderImageFrame(e) {
 		this.canvas.width = e.width, this.canvas.height = e.height;
@@ -11166,12 +11235,12 @@ var Ji = 10, Yi = class {
 		let n = e.data, r = new Uint8ClampedArray(n.buffer, n.byteOffset, n.length);
 		t.putImageData(new ImageData(r, e.width, e.height), 0, 0);
 	}
-}, Xi = 10;
-function Zi(e) {
+}, $i = 10;
+function ea(e) {
 	return "preferredBackend" in e;
 }
-async function* Qi(e, t, n) {
-	let r = e[Symbol.asyncIterator](), i = Ui(t), a = 0;
+async function* ta(e, t, n) {
+	let r = e[Symbol.asyncIterator](), i = Ki(t), a = 0;
 	for (;;) {
 		a % n === 0 && (yield i);
 		let { value: e, done: t } = await r.next();
@@ -11179,21 +11248,21 @@ async function* Qi(e, t, n) {
 		yield e, a++;
 	}
 }
-async function* $i(e, t) {
+async function* na(e, t) {
 	let n = new Uint8Array(await e.arrayBuffer()), r = "name" in e && typeof e.name == "string" ? e.name : "file", i = e.type || "application/octet-stream";
-	if (t && Zi(t)) {
-		let e = await qi(t.preferredBackend), a = await vi(n, {
+	if (t && ea(t)) {
+		let e = await Xi(t.preferredBackend), a = await yi(n, {
 			filename: r,
 			mimeType: i
 		}, {
 			maxFragmentLength: t.fragmentSize,
 			backend: e,
 			backendOptions: t.backendOptions
-		}), o = Math.max(1, t.headerIntervalFrames ?? Xi);
-		yield* Qi(a, e.id, o);
+		}), o = Math.max(1, t.headerIntervalFrames ?? $i);
+		yield* ta(a, e.id, o);
 		return;
 	}
-	yield* await vi(n, {
+	yield* await yi(n, {
 		filename: r,
 		mimeType: i
 	}, {
@@ -11202,9 +11271,9 @@ async function* $i(e, t) {
 		backendOptions: t?.backendOptions
 	});
 }
-var ea = class {
+var ra = class {
 	constructor(e) {
-		this.decoder = new yi(e);
+		this.decoder = new bi(e);
 	}
 	addFrame(e) {
 		this.decoder.receivePart(e);
@@ -11219,9 +11288,9 @@ var ea = class {
 		let { filename: e, mimeType: t, bytes: n } = await this.decoder.getResult();
 		return new File([n], e, { type: t });
 	}
-}, ta = class {
+}, ia = class {
 	constructor(e = {}, t) {
-		this.scanner = new Ti(), this.settled = !1, this.callbacks = e, this.decoder = new ea(t);
+		this.scanner = new Di(), this.settled = !1, this.callbacks = e, this.decoder = new ra(t);
 	}
 	async start(e, t) {
 		this.settled = !1, this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, t);
@@ -11246,7 +11315,7 @@ var ea = class {
 			}));
 		}
 	}
-}, na = class {
+}, aa = class {
 	constructor(e = {}) {
 		this.callbacks = e;
 	}
@@ -11260,14 +11329,14 @@ var ea = class {
 		return this.decoder?.isComplete ?? !1;
 	}
 	addFrame(e) {
-		let t = Wi(e);
+		let t = qi(e);
 		if (t !== void 0) {
 			this.resolvedBackendId || this.resolve(t);
 			return;
 		}
 		if (!this.resolvedBackendId) {
 			if (typeof e != "string") return;
-			this.resolve(gi.id);
+			this.resolve(_i.id);
 		}
 		this.decoder?.addFrame(e);
 	}
@@ -11276,13 +11345,13 @@ var ea = class {
 		return this.decoder.getResult();
 	}
 	resolve(e) {
-		let t = Gi(e);
-		t && (this.resolvedBackendId = e, this.decoder = new ea(t), this.callbacks.onBackendResolved?.(e));
+		let t = Ji(e);
+		t && (this.resolvedBackendId = e, this.decoder = new ra(t), this.callbacks.onBackendResolved?.(e));
 	}
-}, ra = class {
+}, oa = class {
 	constructor(e = {}) {
-		this.scanner = new Ti(), this.settled = !1, this.callbacks = e, this.decoder = new na({ onBackendResolved: (e) => {
-			this.callbacks.onBackendResolved?.(e), e !== gi.id && this.switchToRawFrames();
+		this.scanner = new Di(), this.settled = !1, this.callbacks = e, this.decoder = new aa({ onBackendResolved: (e) => {
+			this.callbacks.onBackendResolved?.(e), e !== _i.id && this.switchToRawFrames();
 		} });
 	}
 	async start(e, t) {
@@ -11324,6 +11393,6 @@ var ea = class {
 	}
 };
 //#endregion
-export { Ci as Camera, Yi as DisplayDriver, ge as IntegrityError, ra as NegotiatingReceiverSession, na as NegotiatingStreamDecoder, ta as ReceiverSession, Ti as Scanner, ea as StreamDecoder, zi as cimbarBackend, $i as encodeToFrames, Ki as probeCimbarAvailable, gi as qrLtBackend, qi as resolvePreferredBackend };
+export { wi as Camera, Qi as DisplayDriver, ge as IntegrityError, oa as NegotiatingReceiverSession, aa as NegotiatingStreamDecoder, ia as ReceiverSession, Di as Scanner, ra as StreamDecoder, Hi as cimbarBackend, na as encodeToFrames, Yi as probeCimbarAvailable, _i as qrLtBackend, Xi as resolvePreferredBackend };
 
 //# sourceMappingURL=index.js.map
