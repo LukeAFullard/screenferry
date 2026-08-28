@@ -1,7 +1,32 @@
 // Must be imported before `@ngraveio/bc-ur` — see src/env/polyfills.ts for why.
 import '../../env/polyfills';
-import FountainEncoder, { FountainEncoderPart } from '@ngraveio/bc-ur/dist/fountainEncoder';
-import FountainDecoder from '@ngraveio/bc-ur/dist/fountainDecoder';
+import FountainEncoderImport, { FountainEncoderPart } from '@ngraveio/bc-ur/dist/fountainEncoder';
+import FountainDecoderImport from '@ngraveio/bc-ur/dist/fountainDecoder';
+
+/**
+ * `@ngraveio/bc-ur`'s `dist/fountain{Encoder,Decoder}.js` are compiled
+ * CommonJS with `exports.default = <class>`. A default `import` of a CJS
+ * module is ambiguous across bundlers/targets: it can resolve either to
+ * that class directly (correct), or — seen specifically in this project's
+ * production Vite/Rollup build, though *not* under vitest's dev-mode
+ * bundler, which is why the test suite didn't catch it — to the whole raw
+ * CJS module object (`{ default: <class>, ... }`), because the bundler
+ * forces default-interop for this import regardless of the module's own
+ * (correct) `__esModule`/`.default` shape. `new FountainEncoderImport(...)`
+ * in that broken case throws `TypeError: ... is not a constructor`, since
+ * the module object itself obviously isn't one.
+ *
+ * `imported.default ?? imported` resolves both cases without depending on
+ * which one a given bundler/build picked: a real class has no `.default`
+ * property of its own (falls through to `imported` itself); the wrongly-
+ * forwarded module object's own `.default` is the real class.
+ */
+function resolveDefaultExport<T>(imported: T): T {
+  return ((imported as unknown as { default?: T }).default ?? imported) as T;
+}
+
+const FountainEncoder = resolveDefaultExport(FountainEncoderImport);
+const FountainDecoder = resolveDefaultExport(FountainDecoderImport);
 
 /**
  * Fragment length (bytes) used when the caller doesn't specify one.
