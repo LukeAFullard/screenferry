@@ -69,6 +69,14 @@ export declare class Camera {
      * (unsupported browser) or failed for any reason, mirroring
      * `grabNativeFrame`'s own fallback — the caller (`Scanner`) falls back to
      * `grabFrame`'s canvas/RGBA path in that case.
+     *
+     * Uses `.slice()`, not `.subarray()`: a subarray stays a *view* onto
+     * `frame.data`'s full NV12/I420 backing buffer, so `postMessage`'s
+     * structured clone (even with a transfer list — see `Scanner.tick`)
+     * would still serialize all 1.5 bytes/pixel of it, not the 1 this
+     * method's return type implies. `.slice()` copies just the luma plane
+     * into a fresh, appropriately-sized buffer that's safe for the caller to
+     * transfer: nothing else in `Camera` holds a reference to it.
      */
     grabLumaFrame(): Promise<{
         data: Uint8Array;
@@ -315,6 +323,7 @@ export declare class NegotiatingReceiverSession {
     private readonly scanner;
     private readonly decoder;
     private readonly callbacks;
+    private readonly goodputTracker;
     private unsubscribe;
     private settled;
     private videoElement;
@@ -327,6 +336,8 @@ export declare class NegotiatingReceiverSession {
         width: number;
         height: number;
     } | undefined;
+    /** Decoded (accepted) frames/sec over a trailing window — see `GoodputTracker`. */
+    get goodput(): number;
     private handleFrame;
     private switchCaptureMode;
 }
@@ -444,6 +455,7 @@ export declare class ReceiverSession<F extends Frame = string> {
     private readonly scanner;
     private readonly decoder;
     private readonly callbacks;
+    private readonly goodputTracker;
     private unsubscribe;
     private settled;
     constructor(callbacks?: ReceiverSessionCallbacks, backend?: TransferBackend<F>);
@@ -454,6 +466,8 @@ export declare class ReceiverSession<F extends Frame = string> {
         width: number;
         height: number;
     } | undefined;
+    /** Decoded (accepted) frames/sec over a trailing window — see `GoodputTracker`. */
+    get goodput(): number;
     private handleFrame;
 }
 
@@ -498,7 +512,7 @@ export declare function resolvePreferredBackend(preferred: PreferredBackend, pro
 export declare class Scanner {
     private camera;
     private worker;
-    private intervalHandle;
+    private timeoutHandle;
     private nextRequestId;
     private pendingDecode;
     private pendingRawFrame;
@@ -511,6 +525,18 @@ export declare class Scanner {
         height: number;
     } | undefined;
     start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void>;
+    /**
+     * Schedules `tickFn` at roughly `1000 / scanHz` ms, via a self-rescheduling
+     * `setTimeout` chain rather than a fixed-period `setInterval`. A few ms of
+     * random jitter per cycle is added on top of the base interval: a
+     * perfectly periodic sampler against a sender that redraws at its own
+     * fixed period can phase-lock onto the display's transition window (e.g.
+     * the `scanHz: 20` / `fps: 10` defaults sample at 0/50/100/150ms against
+     * redraws at 0/100/200ms — every other sample lands mid-transition),
+     * tanking read rate for the rest of the transfer. Jitter makes that lock
+     * impossible for a couple of lines of code.
+     */
+    private startSampling;
     stop(): void;
     private tick;
     private tickRaw;

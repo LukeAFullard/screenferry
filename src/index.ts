@@ -1,5 +1,6 @@
 import { encodeFileToParts, TransferDecoder } from './codec/transfer';
 import { Scanner, type ScannerOptions } from './scan/index';
+import { GoodputTracker } from './scan/goodput';
 import type { Frame, TransferBackend } from './backends/types';
 import {
   backendForId,
@@ -208,6 +209,7 @@ export class ReceiverSession<F extends Frame = string> {
   private readonly scanner = new Scanner();
   private readonly decoder: StreamDecoder<F>;
   private readonly callbacks: ReceiverSessionCallbacks;
+  private readonly goodputTracker = new GoodputTracker();
   private unsubscribe: (() => void) | undefined;
   private settled = false;
 
@@ -218,6 +220,7 @@ export class ReceiverSession<F extends Frame = string> {
 
   async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
     this.settled = false;
+    this.goodputTracker.reset();
     this.unsubscribe = this.scanner.onDecode((frame) => this.handleFrame(frame as F));
     await this.scanner.start(videoElement, opts);
   }
@@ -233,6 +236,11 @@ export class ReceiverSession<F extends Frame = string> {
     return this.scanner.resolution;
   }
 
+  /** Decoded (accepted) frames/sec over a trailing window — see `GoodputTracker`. */
+  get goodput(): number {
+    return this.goodputTracker.framesPerSecond;
+  }
+
   private handleFrame(frame: F): void {
     if (this.settled) return;
 
@@ -244,6 +252,7 @@ export class ReceiverSession<F extends Frame = string> {
       return;
     }
 
+    this.goodputTracker.record();
     this.callbacks.onProgress?.(this.decoder.progress);
 
     if (this.decoder.isComplete) {
@@ -362,6 +371,7 @@ export class NegotiatingReceiverSession {
   private readonly scanner = new Scanner();
   private readonly decoder: NegotiatingStreamDecoder;
   private readonly callbacks: NegotiatingReceiverSessionCallbacks;
+  private readonly goodputTracker = new GoodputTracker();
   private unsubscribe: (() => void) | undefined;
   private settled = false;
   private videoElement: HTMLVideoElement | undefined;
@@ -379,6 +389,7 @@ export class NegotiatingReceiverSession {
 
   async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
     this.settled = false;
+    this.goodputTracker.reset();
     this.videoElement = videoElement;
     this.scannerOpts = opts;
     this.unsubscribe = this.scanner.onDecode((frame) => this.handleFrame(frame));
@@ -396,6 +407,11 @@ export class NegotiatingReceiverSession {
     return this.scanner.resolution;
   }
 
+  /** Decoded (accepted) frames/sec over a trailing window — see `GoodputTracker`. */
+  get goodput(): number {
+    return this.goodputTracker.framesPerSecond;
+  }
+
   private handleFrame(frame: Frame): void {
     if (this.settled) return;
 
@@ -407,6 +423,7 @@ export class NegotiatingReceiverSession {
       return;
     }
 
+    this.goodputTracker.record();
     this.callbacks.onProgress?.(this.decoder.progress);
 
     if (this.decoder.isComplete) {
