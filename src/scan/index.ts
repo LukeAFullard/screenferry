@@ -89,6 +89,8 @@ export class Scanner {
    * `pool` instead, and needed as its own flag regardless of pool size.
    */
   private captureInFlight = false;
+  /** Bumped by `startSampling`/`stop` so a chain outlives neither — see `startSampling`. */
+  private samplingGeneration = 0;
   private pendingRawFrame = false;
   private decodeBytes = false;
   private readonly callbacks = new Set<DecodeCallback>();
@@ -157,16 +159,34 @@ export class Scanner {
    * redraws at 0/100/200ms — every other sample lands mid-transition),
    * tanking read rate for the rest of the transfer. Jitter makes that lock
    * impossible for a couple of lines of code.
+   *
+   * A self-rescheduling chain needs two guards a plain `setInterval` got for
+   * free, both of which are load-bearing here:
+   * - **A throw must not end the loop.** `clearInterval` was the only thing
+   *   that could stop the old timer; with a chain, one exception between
+   *   `tickFn()` and the next `setTimeout` would silently stop scanning for
+   *   the rest of the session. Hence the `try`.
+   * - **`stop()` must actually stop it.** `stop()` can be called *from
+   *   inside* `tickFn` (a completed transfer does exactly this), by which
+   *   point the timer it cleared has already fired — so without a
+   *   generation check the chain would schedule itself again and outlive
+   *   the `Scanner` that owns it, racing the next `start()`'s chain.
    */
   private startSampling(tickFn: () => void, scanHz: number): void {
+    const generation = ++this.samplingGeneration;
     const baseMs = 1000 / scanHz;
     const jitterMs = Math.min(baseMs * 0.1, 5);
 
     const scheduleNext = (): void => {
       const delay = Math.max(0, baseMs + (Math.random() * 2 - 1) * jitterMs);
       this.timeoutHandle = setTimeout(() => {
-        tickFn();
-        scheduleNext();
+        if (generation !== this.samplingGeneration) return;
+        try {
+          tickFn();
+        } catch (err) {
+          console.warn('[screenferry] scan tick failed:', err);
+        }
+        if (generation === this.samplingGeneration) scheduleNext();
       }, delay);
     };
 
@@ -174,6 +194,10 @@ export class Scanner {
   }
 
   stop(): void {
+    // Invalidates any in-flight sampling chain, including one whose timer has
+    // already fired and is mid-tick right now (see `startSampling`).
+    this.samplingGeneration++;
+
     if (this.timeoutHandle !== undefined) {
       clearTimeout(this.timeoutHandle);
       this.timeoutHandle = undefined;
@@ -192,6 +216,11 @@ export class Scanner {
 
   private tick(): void {
     if (this.captureInFlight || !this.camera || !this.pool) return;
+    // Nothing could decode this frame, and capture isn't cheap (a 1080p
+    // `getImageData`, or a luma-plane copy) -- skip the whole tick rather
+    // than pay for a frame only to drop it at `acquireIdle` below. Checked
+    // again after the await, since a worker can free up meanwhile.
+    if (!this.pool.hasIdle) return;
     const camera = this.camera;
     const pool = this.pool;
 
@@ -201,42 +230,52 @@ export class Scanner {
     // deliberately not the same flag decode-busyness uses.
     this.captureInFlight = true;
 
-    void camera
-      .grabLumaFrame()
-      .then((luma) => {
-        this.captureInFlight = false;
+    // The `try` covers a *synchronous* throw from `grabLumaFrame()` itself.
+    // That case skips the `.catch` below entirely (it is never attached),
+    // so nothing would ever clear `captureInFlight` — and since every later
+    // tick early-returns on that flag, scanning would be dead for the rest
+    // of the session. Same wedge shape as a capture that never resolves.
+    try {
+      void camera
+        .grabLumaFrame()
+        .then((luma) => {
+          this.captureInFlight = false;
 
-        // Color carries no information for a QR decode -- the camera's
-        // native luminance plane (1 byte/pixel) is preferred over
-        // `grabFrame`'s full canvas/RGBA capture whenever it's available;
-        // see `Camera.grabLumaFrame`'s doc comment.
-        if (luma) {
+          // Color carries no information for a QR decode -- the camera's
+          // native luminance plane (1 byte/pixel) is preferred over
+          // `grabFrame`'s full canvas/RGBA capture whenever it's available;
+          // see `Camera.grabLumaFrame`'s doc comment.
+          if (luma) {
+            const worker = pool.acquireIdle();
+            // Every worker is still decoding a previous frame -- drop this
+            // one rather than queue it (see `DecodeWorkerPool`'s doc comment).
+            if (!worker) return;
+            const request: DecodeWorkerRequest = { id: this.nextRequestId++, luma };
+            // Transfers `luma.data`'s backing buffer instead of structured-clone
+            // copying it -- safe because `grabLumaFrame` hands back a fresh
+            // `.slice()`'d buffer nothing else in `Camera` retains a reference
+            // to.
+            worker.postMessage(request, [luma.data.buffer]);
+            return;
+          }
+
+          const imageData = camera.grabFrame();
+          if (!imageData) return;
           const worker = pool.acquireIdle();
-          // Every worker is still decoding a previous frame -- drop this
-          // one rather than queue it (see `DecodeWorkerPool`'s doc comment).
           if (!worker) return;
-          const request: DecodeWorkerRequest = { id: this.nextRequestId++, luma };
-          // Transfers `luma.data`'s backing buffer instead of structured-clone
-          // copying it -- safe because `grabLumaFrame` hands back a fresh
-          // `.slice()`'d buffer nothing else in `Camera` retains a reference
-          // to.
-          worker.postMessage(request, [luma.data.buffer]);
-          return;
-        }
-
-        const imageData = camera.grabFrame();
-        if (!imageData) return;
-        const worker = pool.acquireIdle();
-        if (!worker) return;
-        const request: DecodeWorkerRequest = { id: this.nextRequestId++, imageData };
-        // `grabFrame` returns a freshly allocated `ImageData` per call (via
-        // `getImageData`), so transferring its buffer is equally safe here.
-        worker.postMessage(request, [imageData.data.buffer]);
-      })
-      .catch((err: unknown) => {
-        console.warn('[screenferry] frame capture failed:', err);
-        this.captureInFlight = false;
-      });
+          const request: DecodeWorkerRequest = { id: this.nextRequestId++, imageData };
+          // `grabFrame` returns a freshly allocated `ImageData` per call (via
+          // `getImageData`), so transferring its buffer is equally safe here.
+          worker.postMessage(request, [imageData.data.buffer]);
+        })
+        .catch((err: unknown) => {
+          console.warn('[screenferry] frame capture failed:', err);
+          this.captureInFlight = false;
+        });
+    } catch (err) {
+      this.captureInFlight = false;
+      console.warn('[screenferry] frame capture failed:', err);
+    }
   }
 
   private tickRaw(): void {
@@ -248,18 +287,24 @@ export class Scanner {
     const camera = this.camera;
 
     this.pendingRawFrame = true;
-    void camera
-      .grabNativeFrame()
-      .then((frame) => {
-        if (!frame) return;
-        for (const callback of this.callbacks) callback(frame);
-      })
-      .catch((err: unknown) => {
-        console.warn('[screenferry] raw frame capture failed:', err);
-      })
-      .finally(() => {
-        this.pendingRawFrame = false;
-      });
+    // Same synchronous-throw guard as `tick` — see the comment there.
+    try {
+      void camera
+        .grabNativeFrame()
+        .then((frame) => {
+          if (!frame) return;
+          for (const callback of this.callbacks) callback(frame);
+        })
+        .catch((err: unknown) => {
+          console.warn('[screenferry] raw frame capture failed:', err);
+        })
+        .finally(() => {
+          this.pendingRawFrame = false;
+        });
+    } catch (err) {
+      this.pendingRawFrame = false;
+      console.warn('[screenferry] raw frame capture failed:', err);
+    }
   }
 }
 

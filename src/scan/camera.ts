@@ -4,6 +4,15 @@ import type { ImageFrame } from '../backends/types';
 const DEFAULT_IDEAL_WIDTH = 1920;
 const DEFAULT_IDEAL_HEIGHT = 1080;
 
+/**
+ * How long a native capture waits for the frame pump to deliver a frame
+ * before giving up and letting the caller fall back to the canvas/RGBA
+ * path. Comfortably longer than one frame interval at the 30fps we request
+ * (~33ms), so an ordinary inter-frame gap never trips it, but short enough
+ * that a genuinely stalled stream doesn't stall scanning with it.
+ */
+const NATIVE_FRAME_WAIT_MS = 120;
+
 declare global {
   /**
    * Part of the "Insertable Streams for MediaStreamTrack" API — not yet in
@@ -47,6 +56,12 @@ export class Camera {
   private readonly ctx: CanvasRenderingContext2D;
   private stream: MediaStream | undefined;
   private frameReader: ReadableStreamDefaultReader<VideoFrame> | undefined;
+  /** Freshest frame the pump has delivered and nobody has consumed yet — see `startFramePump`. */
+  private latestFrame: VideoFrame | undefined;
+  /** Set while the pump loop should keep reading; cleared by `stop()` to end it. */
+  private pumpRunning = false;
+  /** Resolver for a `takeLatestFrame` caller currently waiting on the next frame, if any. */
+  private frameWaiter: (() => void) | undefined;
 
   constructor(videoElement?: HTMLVideoElement) {
     this.ownsVideoElement = videoElement === undefined;
@@ -124,6 +139,7 @@ export class Camera {
     try {
       const processor = new MediaStreamTrackProcessor({ track });
       this.frameReader = processor.readable.getReader();
+      this.startFramePump();
     } catch {
       this.frameReader = undefined;
     }
@@ -140,10 +156,13 @@ export class Camera {
     this.stream = undefined;
     this.video.srcObject = null;
 
-    if (this.frameReader) {
-      void this.frameReader.cancel().catch(() => {});
-      this.frameReader = undefined;
-    }
+    // Ends the pump loop and releases anything it still holds. Waking a
+    // pending `takeLatestFrame` caller matters: without it, an in-flight
+    // capture would sit out its full timeout after `stop()`.
+    this.disableNativeCapture();
+    const waiter = this.frameWaiter;
+    this.frameWaiter = undefined;
+    waiter?.();
 
     if (this.ownsVideoElement) {
       this.video.remove();
@@ -237,8 +256,19 @@ export class Camera {
 
     let videoFrame: VideoFrame | undefined;
     try {
-      videoFrame = await this.readLatestVideoFrame();
-      if (videoFrame) return await this.videoFrameToImageFrame(videoFrame);
+      videoFrame = await this.takeLatestFrame(NATIVE_FRAME_WAIT_MS);
+      if (videoFrame) {
+        const frame = await this.videoFrameToImageFrame(videoFrame);
+        if (frame) return frame;
+
+        // The frame arrived fine but its layout isn't one we can use
+        // (`videoFrameToImageFrame` returned `undefined`: a format like
+        // BGRA, or non-packed planes). Both are properties of the stream,
+        // not of this frame, so they will hold for every frame this track
+        // ever produces -- shut the native path down rather than decode and
+        // discard a full frame on every tick for the rest of the session.
+        this.disableNativeCapture();
+      }
     } catch (err) {
       console.warn(
         '[screenferry] native VideoFrame capture failed, falling back to canvas/RGBA:',
@@ -250,34 +280,110 @@ export class Camera {
     return undefined;
   }
 
+  /** Tears down the native capture path for the rest of this stream's life, leaving callers on the canvas/RGBA fallback. */
+  private disableNativeCapture(): void {
+    this.pumpRunning = false;
+    this.latestFrame?.close();
+    this.latestFrame = undefined;
+
+    if (this.frameReader) {
+      void this.frameReader.cancel().catch(() => {});
+      this.frameReader = undefined;
+    }
+  }
+
   /**
-   * `frameReader.read()` resolves with the *next queued* frame, not "the
-   * current one" -- if frames are produced faster than `grabNativeFrame`
-   * is called (e.g. a 30fps camera sampled at a lower `scanHz`), a naive
-   * single `read()` per call falls further and further behind real time.
-   * Waits for at least one frame (so this still blocks like `grabFrame`
-   * conceptually does), then drains any additional frames already sitting
-   * in the queue -- bounded by racing each further `read()` against an
-   * immediately-scheduled timer, so a queue that's caught up (no backlog)
-   * doesn't block waiting on the *next* camera frame to arrive.
+   * Continuously drains `frameReader` in the background, keeping only the
+   * most recent frame in `latestFrame` and closing whatever it replaces.
+   *
+   * This exists because the obvious alternative — reading on demand and
+   * racing extra `read()`s against a timer to drain the backlog — *leaks
+   * a `VideoFrame` on every capture*, and that leak is fatal rather than
+   * merely wasteful. Losing a `Promise.race` does not cancel the losing
+   * promise: the orphaned `read()` stays pending, later resolves with a
+   * real `VideoFrame`, and nothing ever closes it. WebCodecs frame pools
+   * are small and fixed (smaller the higher the resolution), so a leak of
+   * one frame per capture exhausts the pool within a handful of frames, at
+   * which point the track stops producing and *every* subsequent `read()`
+   * hangs forever — the camera goes permanently silent, mid-transfer, with
+   * no error anywhere. Measured on a 1080p capture: dead after 2 frames.
+   *
+   * A single long-lived reader loop has exactly one `read()` outstanding at
+   * a time and owns every frame it receives, so nothing is ever orphaned:
+   * each frame is either handed to a consumer (which closes it) or closed
+   * here when a fresher one supersedes it. It also decouples "how fresh is
+   * the frame" from "how long does a capture block" — `takeLatestFrame`
+   * usually returns immediately with an already-arrived frame, instead of
+   * blocking a full camera frame interval the way an on-demand read does.
    */
-  private async readLatestVideoFrame(): Promise<VideoFrame | undefined> {
+  private startFramePump(): void {
     const reader = this.frameReader;
-    if (!reader) return undefined;
+    if (!reader) return;
 
-    const first = await reader.read();
-    if (first.done || !first.value) return undefined;
-    let latest = first.value;
+    this.pumpRunning = true;
+    void (async () => {
+      try {
+        while (this.pumpRunning) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
 
-    for (;;) {
-      const timedOut = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 0));
-      const result = await Promise.race([reader.read(), timedOut]);
-      if (result === 'timeout' || result.done || !result.value) break;
-      latest.close();
-      latest = result.value;
+          // Lost the race with `stop()` -- don't strand this frame.
+          if (!this.pumpRunning) {
+            value.close();
+            break;
+          }
+
+          // Whatever was sitting unconsumed is now stale; closing it here is
+          // what keeps the pool from draining.
+          this.latestFrame?.close();
+          this.latestFrame = value;
+
+          const waiter = this.frameWaiter;
+          this.frameWaiter = undefined;
+          waiter?.();
+        }
+      } catch {
+        // Reader cancelled by `stop()`, or the track ended — either way the
+        // pump is done; `grabLumaFrame`/`grabNativeFrame` fall back to the
+        // canvas/RGBA path from here.
+      } finally {
+        // However the loop ended, no further frames are coming. Clearing this
+        // is what stops `takeLatestFrame` from waiting out its full timeout
+        // on every subsequent capture against a dead stream.
+        this.pumpRunning = false;
+        const waiter = this.frameWaiter;
+        this.frameWaiter = undefined;
+        waiter?.();
+      }
+    })();
+  }
+
+  /**
+   * Takes ownership of the freshest frame the pump has, waiting up to
+   * `timeoutMs` if none has arrived yet. The caller must `close()` what it
+   * gets back. Returns `undefined` on timeout (no frame arrived — a stalled
+   * or not-yet-started stream), so callers fall back to the canvas path
+   * rather than hanging.
+   */
+  private async takeLatestFrame(timeoutMs: number): Promise<VideoFrame | undefined> {
+    if (!this.latestFrame && this.pumpRunning) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          if (this.frameWaiter === waiter) this.frameWaiter = undefined;
+          resolve();
+        }, timeoutMs);
+        const waiter = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        this.frameWaiter = waiter;
+      });
     }
 
-    return latest;
+    const frame = this.latestFrame;
+    this.latestFrame = undefined;
+    return frame;
   }
 
   /**

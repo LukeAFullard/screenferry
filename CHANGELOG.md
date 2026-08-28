@@ -17,6 +17,56 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Fixed
 
+- **Real-camera scanning died after ~2 frames** — the code displayed
+  normally but never decoded anything. `Camera.readLatestVideoFrame`
+  drained the capture queue by racing each extra `reader.read()` against a
+  timer, but losing a `Promise.race` does not cancel the losing promise:
+  every capture left an orphaned `read()` pending, which later resolved
+  with a real `VideoFrame` that nothing ever closed. WebCodecs frame pools
+  are small and fixed (smaller the higher the resolution), so one leaked
+  frame per capture exhausted the pool within a few frames, after which the
+  track stopped producing and *every* subsequent `read()` hung forever —
+  silently, with no error. `Scanner` then sat with `captureInFlight` stuck
+  true and stopped sampling entirely. Measured at 1080p: dead after 2
+  grabs. Replaced with a single long-lived frame pump that has exactly one
+  `read()` outstanding and owns every frame it receives, closing each one
+  either when superseded or after the consumer is done with it — verified
+  in a real browser at 1080p: 40/40 grabs, zero leaked frames. As a bonus
+  it no longer blocks a full camera frame interval per capture.
+  This never showed up in CI or in `examples/app.html`'s self-test because
+  both fake the camera with `canvas.captureStream()`, which yields `BGRA`
+  frames and therefore only ever exercises the canvas/RGBA *fallback* —
+  real camera hardware yields `NV12`/`I420` and takes the native path that
+  was broken. New `examples/capture-diagnostics.html` covers exactly this
+  gap.
+- Three further ways the scan loop could wedge or die permanently, all
+  found while fixing the above and each now covered by a regression test in
+  `test/scan/scanner-lifecycle.test.ts`:
+  - A **synchronous** throw out of `camera.grabLumaFrame()` left
+    `captureInFlight` stuck true (the `.catch` that clears it is never
+    attached in that case), so every later tick early-returned and scanning
+    was dead for the session.
+  - A throw anywhere in a tick killed the sampling chain outright.
+    `setInterval` survived a throwing callback; the self-rescheduling
+    `setTimeout` chain that replaced it did not, since the exception
+    skipped the next `setTimeout`.
+  - `stop()` could not stop a chain when called *from inside* a tick (which
+    a completed transfer does): that tick's timer had already fired, so the
+    chain rescheduled itself straight past the `clearTimeout` and then ran
+    forever, outliving its `Scanner`. Now guarded by a generation counter.
+- A decode worker that threw *synchronously* while unpacking a request
+  (before `decodeFrame`'s own promise chain) posted no response at all, so
+  `Scanner` held that pool slot open forever — at the default pool size of
+  one, wedging scanning permanently. Every path out of the worker's
+  `onmessage` now posts exactly one response.
+- `Scanner` no longer performs a full capture (a 1080p `getImageData`, or a
+  luma-plane copy) on ticks where every decode worker is already busy and
+  the frame could only be thrown away.
+- `Camera` now shuts its native capture path down for good the first time a
+  frame's layout turns out to be unusable (a format like `BGRA`, or
+  non-packed planes). Both are properties of the stream rather than of one
+  frame, so the previous behavior decoded and discarded a full `VideoFrame`
+  on every tick, forever, on top of the canvas capture it fell back to.
 - `Scanner`'s single `pendingDecode` flag reserved the "one decode in
   flight" slot for the full duration of *capture plus decode*, so the next
   camera frame couldn't even start capturing until the current one had
@@ -186,6 +236,18 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Added
 
+- `examples/capture-diagnostics.html` — a browser diagnostic for the
+  **native camera capture path**, which no automated test and no other
+  example page can reach: `app.html`'s self-test and the CI loopback
+  harness both fake the camera with `canvas.captureStream()` (`BGRA`
+  frames), which only exercises the canvas/RGBA fallback, while real camera
+  hardware produces `NV12`/`I420` and takes an entirely different path.
+  Reports the camera's actual pixel format, checks that repeated capture
+  doesn't wedge, counts leaked `VideoFrame`s, and confirms the full
+  `Scanner` pipeline keeps dispatching frames and stops cleanly. This is
+  the check that would have caught the capture bug above; it also works
+  headless under Chromium's `--use-fake-device-for-media-stream`, which
+  produces `I420` like a real camera.
 - **Decode worker pool.** `ScannerOptions` gained `decodeWorkers` (default
   1, unchanged from prior behavior): the number of camera frames that can
   be mid-decode at once, via a new `DecodeWorkerPool`

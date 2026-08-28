@@ -23,6 +23,11 @@ export class DecodeWorkerPool<W> {
     return this.slots.length;
   }
 
+  /** Whether `acquireIdle()` would currently succeed — lets a caller skip expensive capture work it would only throw away. */
+  get hasIdle(): boolean {
+    return this.slots.some((s) => !s.busy);
+  }
+
   /** Returns an idle worker and marks it busy, or `undefined` if every worker is currently decoding. */
   acquireIdle(): W | undefined {
     const slot = this.slots.find((s) => !s.busy);

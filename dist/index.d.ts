@@ -21,6 +21,12 @@ export declare class Camera {
     private readonly ctx;
     private stream;
     private frameReader;
+    /** Freshest frame the pump has delivered and nobody has consumed yet — see `startFramePump`. */
+    private latestFrame;
+    /** Set while the pump loop should keep reading; cleared by `stop()` to end it. */
+    private pumpRunning;
+    /** Resolver for a `takeLatestFrame` caller currently waiting on the next frame, if any. */
+    private frameWaiter;
     constructor(videoElement?: HTMLVideoElement);
     private static createHiddenVideoElement;
     start(opts?: CameraOptions): Promise<HTMLVideoElement>;
@@ -85,18 +91,41 @@ export declare class Camera {
     } | undefined>;
     /** Shared native-capture attempt behind `grabNativeFrame`/`grabLumaFrame` — `undefined` on any failure or if the native path isn't available, with no RGBA fallback of its own (each caller applies its own). */
     private captureNativeFrame;
+    /** Tears down the native capture path for the rest of this stream's life, leaving callers on the canvas/RGBA fallback. */
+    private disableNativeCapture;
     /**
-     * `frameReader.read()` resolves with the *next queued* frame, not "the
-     * current one" -- if frames are produced faster than `grabNativeFrame`
-     * is called (e.g. a 30fps camera sampled at a lower `scanHz`), a naive
-     * single `read()` per call falls further and further behind real time.
-     * Waits for at least one frame (so this still blocks like `grabFrame`
-     * conceptually does), then drains any additional frames already sitting
-     * in the queue -- bounded by racing each further `read()` against an
-     * immediately-scheduled timer, so a queue that's caught up (no backlog)
-     * doesn't block waiting on the *next* camera frame to arrive.
+     * Continuously drains `frameReader` in the background, keeping only the
+     * most recent frame in `latestFrame` and closing whatever it replaces.
+     *
+     * This exists because the obvious alternative — reading on demand and
+     * racing extra `read()`s against a timer to drain the backlog — *leaks
+     * a `VideoFrame` on every capture*, and that leak is fatal rather than
+     * merely wasteful. Losing a `Promise.race` does not cancel the losing
+     * promise: the orphaned `read()` stays pending, later resolves with a
+     * real `VideoFrame`, and nothing ever closes it. WebCodecs frame pools
+     * are small and fixed (smaller the higher the resolution), so a leak of
+     * one frame per capture exhausts the pool within a handful of frames, at
+     * which point the track stops producing and *every* subsequent `read()`
+     * hangs forever — the camera goes permanently silent, mid-transfer, with
+     * no error anywhere. Measured on a 1080p capture: dead after 2 frames.
+     *
+     * A single long-lived reader loop has exactly one `read()` outstanding at
+     * a time and owns every frame it receives, so nothing is ever orphaned:
+     * each frame is either handed to a consumer (which closes it) or closed
+     * here when a fresher one supersedes it. It also decouples "how fresh is
+     * the frame" from "how long does a capture block" — `takeLatestFrame`
+     * usually returns immediately with an already-arrived frame, instead of
+     * blocking a full camera frame interval the way an on-demand read does.
      */
-    private readLatestVideoFrame;
+    private startFramePump;
+    /**
+     * Takes ownership of the freshest frame the pump has, waiting up to
+     * `timeoutMs` if none has arrived yet. The caller must `close()` what it
+     * gets back. Returns `undefined` on timeout (no frame arrived — a stalled
+     * or not-yet-started stream), so callers fall back to the canvas path
+     * rather than hanging.
+     */
+    private takeLatestFrame;
     /**
      * `format = 12` (NV12) / `format = 420` (I420) match the pixel-format
      * codes `_cimbard_scan_extract_decode` expects for those layouts (see
@@ -525,6 +554,8 @@ export declare class Scanner {
      * `pool` instead, and needed as its own flag regardless of pool size.
      */
     private captureInFlight;
+    /** Bumped by `startSampling`/`stop` so a chain outlives neither — see `startSampling`. */
+    private samplingGeneration;
     private pendingRawFrame;
     private decodeBytes;
     private readonly callbacks;
@@ -547,6 +578,18 @@ export declare class Scanner {
      * redraws at 0/100/200ms — every other sample lands mid-transition),
      * tanking read rate for the rest of the transfer. Jitter makes that lock
      * impossible for a couple of lines of code.
+     *
+     * A self-rescheduling chain needs two guards a plain `setInterval` got for
+     * free, both of which are load-bearing here:
+     * - **A throw must not end the loop.** `clearInterval` was the only thing
+     *   that could stop the old timer; with a chain, one exception between
+     *   `tickFn()` and the next `setTimeout` would silently stop scanning for
+     *   the rest of the session. Hence the `try`.
+     * - **`stop()` must actually stop it.** `stop()` can be called *from
+     *   inside* `tickFn` (a completed transfer does exactly this), by which
+     *   point the timer it cleared has already fired — so without a
+     *   generation check the chain would schedule itself again and outlive
+     *   the `Scanner` that owns it, racing the next `start()`'s chain.
      */
     private startSampling;
     stop(): void;

@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>screenferry — capture diagnostics</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 760px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      pre {
+        font-family: ui-monospace, monospace;
+        white-space: pre-wrap;
+        background: #f5f5f5;
+        padding: 0.75rem;
+        border-radius: 4px;
+      }
+      .pass {
+        color: #0a0;
+        font-weight: bold;
+      }
+      .fail {
+        color: #c00;
+        font-weight: bold;
+      }
+      video {
+        width: 240px;
+        border: 1px solid #ccc;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Capture diagnostics</h1>
+    <p>
+      Exercises <code>Camera</code>/<code>Scanner</code>'s <strong>native capture path</strong> —
+      the one a real camera actually uses — and checks it stays alive under sustained sampling.
+    </p>
+    <p>
+      <strong>Why this page exists.</strong> <code>app.html</code>'s self-test cannot cover this. It
+      fakes a camera with <code>canvas.captureStream()</code>, which produces
+      <code>BGRA</code> frames; <code>Camera</code> only takes its native luma path for
+      <code>NV12</code>/<code>I420</code>, which is what real camera hardware produces. So the
+      self-test silently exercises the canvas/RGBA fallback and passes even when the native path is
+      completely broken. A capture bug that killed real-camera scanning after two frames shipped
+      green through every automated test and through the self-test — this page is the check that
+      would have caught it.
+    </p>
+    <p>
+      Open it on a device with a real camera and press start. In CI/headless, Chromium's
+      <code>--use-fake-device-for-media-stream</code> also produces <code>I420</code> and exercises
+      the same path.
+    </p>
+
+    <p>
+      <button id="start">Run diagnostics</button>
+      <label>seconds: <input id="seconds" type="number" value="10" min="3" max="60" /></label>
+      <label>decode workers: <input id="workers" type="number" value="1" min="1" max="8" /></label>
+    </p>
+    <video id="preview" autoplay playsinline muted></video>
+    <pre id="out">idle</pre>
+
+    <script type="module">
+      import { Camera, Scanner } from '../dist/index.js';
+
+      const out = document.getElementById('out');
+      const write = (m, cls) =>
+        (out.innerHTML += cls ? `\n<span class="${cls}">${m}</span>` : `\n${m}`);
+
+      document.getElementById('start').addEventListener('click', async () => {
+        out.textContent = 'running…';
+        const seconds = Number(document.getElementById('seconds').value) || 10;
+        const workers = Number(document.getElementById('workers').value) || 1;
+
+        // --- 1. What does this camera actually produce? -------------------
+        let closes = 0;
+        const origClose = VideoFrame.prototype.close;
+        VideoFrame.prototype.close = function () {
+          closes++;
+          return origClose.call(this);
+        };
+        let reads = 0;
+        const origGetReader = ReadableStream.prototype.getReader;
+        ReadableStream.prototype.getReader = function (...a) {
+          const reader = origGetReader.apply(this, a);
+          const origRead = reader.read.bind(reader);
+          reader.read = async () => {
+            const r = await origRead();
+            if (r.value) reads++;
+            return r;
+          };
+          return reader;
+        };
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          const [track] = stream.getVideoTracks();
+          if (window.MediaStreamTrackProcessor) {
+            const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+            const { value: vf } = await reader.read();
+            if (vf) {
+              write(
+                `camera format=${vf.format} visible=${vf.visibleRect.width}x${vf.visibleRect.height}`,
+              );
+              write(
+                vf.format === 'NV12' || vf.format === 'I420'
+                  ? 'native luma path: SUPPORTED by this camera'
+                  : `native luma path: not used (format ${vf.format}) — canvas/RGBA fallback`,
+              );
+              vf.close();
+            }
+            await reader.cancel();
+          } else {
+            write('MediaStreamTrackProcessor unavailable — canvas/RGBA fallback (e.g. Firefox)');
+          }
+          stream.getTracks().forEach((t) => t.stop());
+        } catch (e) {
+          write(`camera probe failed: ${e}`, 'fail');
+        }
+
+        // --- 2. Does repeated capture stay alive? -------------------------
+        // The failure this catches is a capture that stops resolving after a
+        // few frames (a leaked VideoFrame exhausting the pool), which looks
+        // exactly like "displays but never decodes".
+        reads = 0;
+        closes = 0;
+        const camera = new Camera();
+        await camera.start();
+        let wedged = false;
+        for (let i = 0; i < 30; i++) {
+          const r = await Promise.race([
+            camera.grabLumaFrame(),
+            new Promise((res) => setTimeout(() => res('WEDGED'), 3000)),
+          ]);
+          if (r === 'WEDGED') {
+            write(`*** CAPTURE WEDGED after ${i} grabs ***`, 'fail');
+            wedged = true;
+            break;
+          }
+        }
+        camera.stop();
+        if (!wedged) write('capture survived 30 consecutive grabs', 'pass');
+        write(`VideoFrames read=${reads} closed=${closes} leaked=${reads - closes}`);
+        if (reads - closes > 2) write('*** LEAKING VideoFrames — pool will exhaust ***', 'fail');
+
+        // --- 3. Does the full Scanner pipeline keep dispatching? ----------
+        let dispatched = 0;
+        const origPost = Worker.prototype.postMessage;
+        Worker.prototype.postMessage = function (...a) {
+          dispatched++;
+          return origPost.apply(this, a);
+        };
+
+        const scanner = new Scanner();
+        let decoded = 0;
+        scanner.onDecode(() => decoded++);
+        await scanner.start(document.getElementById('preview'), {
+          scanHz: 20,
+          decodeWorkers: workers,
+        });
+        const t0 = performance.now();
+        await new Promise((r) => setTimeout(r, seconds * 1000));
+        const elapsed = (performance.now() - t0) / 1000;
+        scanner.stop();
+
+        write(
+          `frames dispatched to decode workers: ${dispatched} in ${elapsed.toFixed(1)}s ` +
+            `(${(dispatched / elapsed).toFixed(1)}/s), decoded=${decoded}`,
+        );
+        write(
+          dispatched > elapsed * 2 ? 'scan pipeline: ALIVE' : 'scan pipeline: *** WEDGED ***',
+          dispatched > elapsed * 2 ? 'pass' : 'fail',
+        );
+
+        // stop() must leave nothing still running.
+        const afterStop = dispatched;
+        await new Promise((r) => setTimeout(r, 1500));
+        write(
+          dispatched === afterStop
+            ? 'stop(): clean (no work dispatched afterwards)'
+            : `stop(): *** ${dispatched - afterStop} dispatches leaked after stop ***`,
+          dispatched === afterStop ? 'pass' : 'fail',
+        );
+
+        Worker.prototype.postMessage = origPost;
+        VideoFrame.prototype.close = origClose;
+        ReadableStream.prototype.getReader = origGetReader;
+      });
+    </script>
+  </body>
+</html>
