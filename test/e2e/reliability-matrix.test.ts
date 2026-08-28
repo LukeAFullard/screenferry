@@ -11,8 +11,9 @@ async function fileBytes(blob: Blob): Promise<Uint8Array> {
 // (this is a correctness check, not a benchmark) — nominal fragment counts
 // stay small via a size-scaled fragmentSize, while still spanning roughly an
 // order of magnitude in file size and drop rate. fragmentSize is capped
-// well under ECC Q's ~324-byte QR-version-20 ceiling (vs. L's ~600) so every
-// cell in the grid, at every ECC level under test, fits in a single frame.
+// well under ECC Q's QR-version-<=40 ceiling (much larger than L's ~2100,
+// itself much larger than these test sizes) so every cell in the grid, at
+// every ECC level under test, fits in a single frame.
 const SIZES = [
   { label: '2 KB', bytes: 2_000, fragmentSize: 100 },
   { label: '20 KB', bytes: 20_000, fragmentSize: 300 },

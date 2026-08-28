@@ -12,6 +12,9 @@ export interface QrEncodeOptions {
   /**
    * Highest QR version to allow. Higher versions pack more data but get too
    * dense to read reliably at typical laptop-screen-to-phone-camera range.
+   * Defaults to `DEFAULT_MAX_QR_VERSION` (40, the highest version ISO/IEC
+   * 18004 defines) — real-camera scan reliability at that ceiling has not
+   * been validated on physical hardware; see `DEFAULT_MAX_QR_VERSION`.
    */
   maxVersion?: number;
 }
@@ -25,7 +28,7 @@ export interface QrModuleGrid {
 }
 
 export const DEFAULT_ECC_LEVEL: EccLevel = 'L';
-export const DEFAULT_MAX_QR_VERSION = 20;
+export const DEFAULT_MAX_QR_VERSION = 40;
 
 /**
  * bc-ur part strings are lowercase and case-insensitive on decode

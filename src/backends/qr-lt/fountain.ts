@@ -5,11 +5,12 @@ import { UR, UREncoder, URDecoder } from '@ngraveio/bc-ur';
 /**
  * Fragment length (bytes) used when the caller doesn't specify one.
  * Empirically measured by `npm run qr:capacity` (see `scripts/qr-capacity.mjs`)
- * as the largest fragment whose rendered UR part still fits QR version <= 20
- * at ECC L — Stage 3's chosen ceiling for reliable camera-scan density.
- * Given a small safety margin below the measured 595-byte cutoff.
+ * as the largest fragment whose rendered UR part still fits QR version <= 40
+ * at ECC L — the highest version ISO/IEC 18004 defines. Matches the measured
+ * 2127-byte cutoff exactly, since the binary search already only accepts
+ * fragment lengths that fit.
  */
-const DEFAULT_MAX_FRAGMENT_LENGTH = 580;
+const DEFAULT_MAX_FRAGMENT_LENGTH = 2127;
 
 /**
  * Drives a Luby Transform fountain encoder over `bytes`, yielding UR-encoded

@@ -1,5 +1,5 @@
 // Empirically finds the largest bc-ur fountain fragment length (bytes) whose
-// rendered UR part string still fits a QR code at version <= 20, ECC L.
+// rendered UR part string still fits a QR code at version <= 40, ECC L.
 // Re-run this (`npm run qr:capacity`) whenever the ECC level, max version,
 // or the UR encoding scheme changes, and feed the printed number back into
 // src/backends/qr-lt/fountain.ts's DEFAULT_MAX_FRAGMENT_LENGTH.
@@ -7,7 +7,7 @@ import { UR, UREncoder } from '@ngraveio/bc-ur';
 import { encode as uqrEncode } from 'uqr';
 
 const ECC_LEVEL = 'L';
-const MAX_VERSION = 20;
+const MAX_VERSION = 40;
 
 // A large, multi-fragment message exercises realistic multi-part UR
 // overhead (scheme + seqNum/seqLength + per-fragment checksum), not just

@@ -72,21 +72,25 @@ export class Camera {
   }
 
   async start(opts?: CameraOptions): Promise<HTMLVideoElement> {
-    // Matches the constraints the only known-working browser Cimbar
-    // receiver (`sz3/libcimbar`'s `recv.js`, `init_video`) requests.
-    // Cimbar's fixed-threshold anchor detector (`Scanner::test_pixel` in
-    // libcimbar) is far more sensitive than QR to exposure/focus hunting
-    // and motion blur, and these are how that reference implementation
-    // avoids it. `exposureMode`/`focusMode` aren't part of the standard
+    // `exposureMode`/`focusMode` match the constraints the only
+    // known-working browser Cimbar receiver (`sz3/libcimbar`'s `recv.js`,
+    // `init_video`) requests. Cimbar's fixed-threshold anchor detector
+    // (`Scanner::test_pixel` in libcimbar) is far more sensitive than QR to
+    // exposure/focus hunting and motion blur, and these are how that
+    // reference implementation avoids it. They aren't part of the standard
     // `MediaTrackConstraints` TS type (still draft/experimental), but
     // browsers silently ignore constraint names they don't support, so
     // adding them unconditionally is safe even where they're unsupported.
+    // `frameRate` is raised to give headroom for `qrLtBackend` senders that
+    // push `DisplayDriverOptions.fps` above the ~13fps a 15fps capture would
+    // cap them at; it's just an `ideal`, so browsers/hardware that can't
+    // sustain 30fps still negotiate down.
     const videoConstraints: MediaTrackConstraints = {
       facingMode: opts?.facingMode ?? 'environment',
       width: { ideal: opts?.width ?? DEFAULT_IDEAL_WIDTH },
       height: { ideal: opts?.height ?? DEFAULT_IDEAL_HEIGHT },
       aspectRatio: matchMedia('all and (orientation: landscape)').matches ? 16 / 9 : 9 / 16,
-      frameRate: { ideal: 15 },
+      frameRate: { ideal: 30 },
     };
     Object.assign(videoConstraints, { exposureMode: 'continuous', focusMode: 'continuous' });
 
