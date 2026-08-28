@@ -18,13 +18,26 @@ export interface DecodedFile extends FileMeta {
  * Builds the wire envelope for `bytes`: hashes the original bytes, compresses
  * if that's smaller, and prepends the metadata header. The result is what
  * gets fountain-encoded, not the raw file bytes.
+ *
+ * `skipCompression` (set for a backend with `compressesInternally: true`,
+ * e.g. Cimbar) skips the gzip pass entirely rather than just discarding its
+ * result — the backend already compresses the envelope itself, so running
+ * gzip first would both waste CPU and hand it already-incompressible bytes.
  */
-export async function buildEnvelope(bytes: Uint8Array, meta: FileMeta): Promise<Uint8Array> {
+export async function buildEnvelope(
+  bytes: Uint8Array,
+  meta: FileMeta,
+  opts?: { skipCompression?: boolean },
+): Promise<Uint8Array> {
   const sha256 = await sha256Hex(bytes);
-  const compressed = compress(bytes);
 
-  const useCompressed = compressed.length < bytes.length;
-  const payload = useCompressed ? compressed : bytes;
+  let useCompressed = false;
+  let payload = bytes;
+  if (!opts?.skipCompression) {
+    const compressed = compress(bytes);
+    useCompressed = compressed.length < bytes.length;
+    payload = useCompressed ? compressed : bytes;
+  }
 
   return encodeEnvelope(
     {
@@ -49,8 +62,10 @@ export async function encodeFileToParts<F extends Frame = string>(
   meta: FileMeta,
   opts?: { maxFragmentLength?: number; backend?: TransferBackend<F>; backendOptions?: unknown },
 ): Promise<AsyncIterable<F>> {
-  const envelope = await buildEnvelope(bytes, meta);
   const backend = (opts?.backend ?? qrLtBackend) as unknown as TransferBackend<F>;
+  const envelope = await buildEnvelope(bytes, meta, {
+    skipCompression: backend.compressesInternally,
+  });
   // `backendOptions` lets a caller reach a specific backend's own encode
   // options (e.g. `CimbarEncodeOptions.frameSize`) — `qrLtBackend` only
   // understands `maxFragmentLength`, so that stays the fallback shape.

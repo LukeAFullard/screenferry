@@ -45,6 +45,13 @@ export interface BackendDecoder<F extends Frame = Frame> {
  */
 export interface TransferBackend<F extends Frame = Frame> {
   readonly id: string;
+  /**
+   * When true, `buildEnvelope` skips its own gzip pass for this backend —
+   * for a backend (e.g. Cimbar) that already compresses internally, gzip
+   * on top is wasted CPU on already-incompressible bytes. Defaults to
+   * `false`/unset (gzip as before) for any backend that doesn't set it.
+   */
+  readonly compressesInternally?: boolean;
   encode(bytes: Uint8Array, opts?: unknown): AsyncIterable<F>;
   createDecoder(): BackendDecoder<F>;
 }

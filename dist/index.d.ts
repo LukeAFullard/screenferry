@@ -73,6 +73,16 @@ export declare class Camera {
      * `VideoFrame.format` (e.g. `'RGBA'`/`'BGRA'` from a browser/camera combo
      * that doesn't expose YUV) returns `undefined` so the caller falls back
      * to the canvas/RGBA path instead of guessing at an unsupported layout.
+     *
+     * Per the WebCodecs spec, `allocationSize()`/`copyTo()` both default
+     * their `rect` option to the frame's *visible* rect, not its
+     * `codedWidth`/`codedHeight` -- on cameras where those differ (e.g. a
+     * 1080-tall visible frame inside a 1088-tall H.264 macroblock-padded
+     * coded frame), reporting `codedWidth`/`codedHeight` alongside a buffer
+     * sized for the visible rect desyncs the two, corrupting the chroma-plane
+     * offsets `_cimbard_scan_extract_decode`'s raw `cv::Mat` read assumes.
+     * Report `visibleRect`'s dimensions instead, to match the buffer that was
+     * actually captured.
      */
     private videoFrameToImageFrame;
 }
@@ -109,6 +119,23 @@ export declare interface CameraOptions {
  * may not reliably find tile boundaries; this project's own envelope
  * overhead plus a normal file easily clears that in practice).
  *
+ * **Known limitation: one sender and one receiver can't safely share a
+ * module instance.** `loadCimbarModule` loads the WASM binary once per
+ * process, and `_cimbare_configure`/`_cimbard_configure_decode` both write
+ * the same single C++-side `Config::active_conf()` (see `module.ts`'s doc
+ * comments on those two exports) — there's no per-role state. Running a
+ * sender's still-in-progress `encode()` generator and a receiver's
+ * `CimbarDecoder` in the same page/thread means the receiver's per-frame
+ * mode-cycling (`_cimbard_configure_decode`) can clobber the encoder's
+ * config between frames, corrupting everything it renders from that point
+ * on — with no visible symptom beyond "images appear, nothing ever
+ * decodes." `examples/app.html`'s cimbar section runs this exact
+ * same-page loopback for convenience; its "pin cimbar" checkbox does not
+ * work around this (it only skips header-frame negotiation, not the
+ * shared module instance). A real two-party transfer (a phone camera
+ * receiving from a laptop screen, as this backend is designed for) uses
+ * two separate WASM module instances/processes and isn't affected.
+ *
  * `Frame` for this backend is rendered pixel data (`ImageFrame`), not a
  * string — `DisplayDriver` and `Scanner` both need to be told to expect
  * that (see their respective option docs) when using this backend instead
@@ -123,7 +150,11 @@ export declare interface CameraOptions {
 export declare const cimbarBackend: TransferBackend<ImageFrame>;
 
 export declare interface CimbarEncodeOptions {
-    /** Encode/render resolution (square). Defaults to `DEFAULT_FRAME_SIZE`. */
+    /**
+     * Symbol resolution (square). Defaults to `DEFAULT_FRAME_SIZE`. The
+     * actual render window/canvas is `frameSize + WINDOW_MARGIN_PX` — see
+     * `initEncoder` — matching libcimbar's own default window sizing.
+     */
     frameSize?: number;
     /**
      * libcimbar encode mode (`_cimbare_configure`'s first argument). Defaults
@@ -134,6 +165,17 @@ export declare interface CimbarEncodeOptions {
      * it cycles through candidates per frame until one decodes.
      */
     mode?: number;
+    /**
+     * zstd compression level (0-22) for libcimbar's own internal compression
+     * (`_cimbare_configure`'s second argument) — out of that range (the
+     * default, matching every prior call site's hardcoded `-1`) selects
+     * libcimbar's own default level. `cimbarBackend` skips screenferry's own
+     * gzip pass for this backend (see `compressesInternally` on the exported
+     * `TransferBackend`) since gzipped bytes are incompressible and would
+     * make this internal pass pure wasted CPU, so this is the only
+     * compression the payload gets.
+     */
+    compressionLevel?: number;
 }
 
 declare type DecodeCallback = (frame: Frame) => void;
@@ -158,6 +200,8 @@ export declare class DisplayDriver {
     private frameIndex;
     private lastFrameTime;
     private visibilityListener;
+    /** Guards against a slow render (e.g. Cimbar's WebGL readback) overlapping the next tick's render on the same canvas — see `tick`. */
+    private renderInFlight;
     constructor(source: AsyncIterable<Frame>, canvas: HTMLCanvasElement, opts?: DisplayDriverOptions | undefined);
     start(): void;
     stop(): void;
@@ -504,6 +548,13 @@ export declare class StreamDecoder<F extends Frame = string> {
  */
 export declare interface TransferBackend<F extends Frame = Frame> {
     readonly id: string;
+    /**
+     * When true, `buildEnvelope` skips its own gzip pass for this backend —
+     * for a backend (e.g. Cimbar) that already compresses internally, gzip
+     * on top is wasted CPU on already-incompressible bytes. Defaults to
+     * `false`/unset (gzip as before) for any backend that doesn't set it.
+     */
+    readonly compressesInternally?: boolean;
     encode(bytes: Uint8Array, opts?: unknown): AsyncIterable<F>;
     createDecoder(): BackendDecoder<F>;
 }

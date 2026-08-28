@@ -20,23 +20,48 @@ export interface CimbarModule {
   _malloc(size: number): number;
   _free(ptr: number): void;
 
-  /** Binds GLFW/WebGL rendering to `Module.canvas` (set before calling this). */
+  /** Binds GLFW/WebGL rendering to `Module.canvas` (set before calling this). Should be sized `image_size + 16` for the active mode — see `cimbar/index.ts`'s `WINDOW_MARGIN_PX`. */
   _cimbare_init_window(width: number, height: number): void;
   /**
    * Selects the encode mode. `68` ("mode B", libcimbar's default/reference
    * mode — see `main.js`'s `setMode('B')` -> `modeVal = 68` fallthrough) is
    * what the reference web app uses unless the user picks something else in
-   * its UI (4-color, "Bu", "Bm" variants). The second argument is always
-   * `-1` in every reference call site observed; its meaning is unknown.
+   * its UI (4-color, "Bu", "Bm" variants). The second argument is the zstd
+   * compression level (`0`-`22`); out of that range (every reference call
+   * site's hardcoded `-1`) selects libcimbar's own default level. Note:
+   * `active_conf()` is a single shared config, not per-caller — see
+   * `_cimbard_configure_decode`'s doc comment.
    */
-  _cimbare_configure(mode: number, unused: number): void;
-  _cimbare_init_encode(filenamePtr: number, filenameLen: number, unused: number): number;
+  _cimbare_configure(mode: number, compressionLevel: number): void;
+  /**
+   * The third argument is `encode_id`: negative means "increment the
+   * internal id" (every observed call site), a non-negative value sets it
+   * explicitly. Matters to the receiver — the id identifies the stream to
+   * the fountain sink, so restarting a send (a fresh `encode_id`) strands
+   * whatever the receiver had already accumulated under the old one.
+   */
+  _cimbare_init_encode(filenamePtr: number, filenameLen: number, encodeId: number): number;
   _cimbare_encode_bufsize(): number;
+  /** Returns a negative code on failure (`-2` write failure, `-3` fountain-encoder-stream creation failure) — not documented as `void`, check it. */
   _cimbare_encode(bytesPtr: number, bytesLen: number): number;
-  _cimbare_render(): void;
+  /** Returns `-1` with no window/encoder stream, `0` if there's nothing to draw, `1` on a successful draw — not `void`, check it. */
+  _cimbare_render(): number;
+  /** `colorBalance` is a bool: true sets `color_mode = Config::color_mode() + 0x100` (untraced downstream effect). Returns `-1` with no stream, otherwise the incrementing frame count. */
   _cimbare_next_frame(colorBalance: number): number;
 
-  /** Selects the decode mode — must match the encoder's `_cimbare_configure` mode, or extraction fails on every frame. */
+  /**
+   * Selects the decode mode — must match the encoder's `_cimbare_configure`
+   * mode, or extraction fails on every frame. Writes the same single
+   * `Config::active_conf()` that `_cimbare_configure` does (this WASM
+   * module has one C++-side static config, shared across both the
+   * `_cimbare_*`/`_cimbard_*` ABIs, not per-caller/per-role) — calling this
+   * while an encoder generator is still running in the same module
+   * instance (e.g. a same-page sender+receiver demo) will corrupt whatever
+   * that encoder renders next. Also resets the fountain sink (discarding
+   * any already-accumulated chunks) on an actual mode change, so mode
+   * cycling is destructive to receive progress even across two separate
+   * module instances/devices.
+   */
   _cimbard_configure_decode(mode: number): void;
   _cimbard_get_bufsize(): number;
   /**
@@ -79,7 +104,10 @@ export interface CimbarModule {
    * chunks have accumulated to reconstruct a complete file — the low
    * 32 bits (truncate: `Number(res & 0xFFFFFFFFn)`) are that file's `id`,
    * used with `_cimbard_get_filesize`/`_cimbard_decompress_read`. `<= 0`
-   * means "not complete yet, keep feeding it frames."
+   * means "not complete yet, keep feeding it frames" — except `-5`
+   * specifically, which means `len` didn't match the configured mode's
+   * expected chunk size (a strong signal the configured mode is wrong,
+   * distinct from ordinary incompleteness).
    */
   _cimbard_fountain_decode(ptr: number, len: number): bigint;
   _cimbard_get_filesize(id: number): number;
@@ -93,6 +121,14 @@ export interface CimbarModule {
    * chunk of the returned length written to `bufPtr`.
    */
   _cimbard_decompress_read(id: number, bufPtr: number, bufLen: number): number;
+  /**
+   * Writes a human-readable report string. Before any chunk has been
+   * accepted, holds per-frame timing (`"sce: <ms>, imgdec: <ms>"`); after
+   * `_cimbard_fountain_decode` runs, holds the fountain sink's bracketed
+   * per-file progress list instead (`"[ 0.42, ... ]"`) — see
+   * `CimbarDecoder.updateProgress`'s doc comment for how this project
+   * distinguishes and uses the latter.
+   */
   _cimbard_get_report(bufPtr: number, bufLen: number): number;
 
   canvas?: unknown;
