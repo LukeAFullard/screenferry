@@ -6,6 +6,7 @@ import {
   decodeHeaderFrame,
   encodeHeaderFrame,
   resolvePreferredBackend,
+  scannerOptionsForBackend,
   type PreferredBackend,
 } from './backends/negotiation';
 import { qrLtBackend } from './backends/qr-lt';
@@ -131,6 +132,7 @@ export { DisplayDriver } from './backends/display-driver';
 export type { DisplayDriverOptions } from './backends/display-driver';
 
 export { qrLtBackend } from './backends/qr-lt';
+export { qrBinLtBackend } from './backends/qr-bin-lt';
 export { cimbarBackend } from './backends/cimbar';
 export type { CimbarEncodeOptions } from './backends/cimbar';
 export type { Frame, ImageFrame, TransferBackend } from './backends/types';
@@ -345,8 +347,11 @@ export interface NegotiatingReceiverSessionCallbacks extends ReceiverSessionCall
  * (Stage 11) — the negotiated equivalent of `ReceiverSession`. Always
  * starts `Scanner` in its default QR text-decode mode (where the header
  * frame always lives); on detecting a non-`qr-lt` backend, restarts
- * `Scanner` with `rawFrames: true` and continues the transfer with the
- * right decoder. The caller never chooses a backend up front.
+ * `Scanner` in whichever capture mode that backend needs
+ * (`scannerOptionsForBackend` — `rawFrames` for an image-based backend like
+ * Cimbar, `decodeBytes` for a byte-mode QR backend like `qrBinLtBackend`)
+ * and continues the transfer with the right decoder. The caller never
+ * chooses a backend up front.
  *
  * The restart briefly stops and re-acquires the camera — unavoidable given
  * `Scanner`'s current design (see the README's Cimbar section on
@@ -367,7 +372,7 @@ export class NegotiatingReceiverSession {
     this.decoder = new NegotiatingStreamDecoder({
       onBackendResolved: (backendId) => {
         this.callbacks.onBackendResolved?.(backendId);
-        if (backendId !== qrLtBackend.id) void this.switchToRawFrames();
+        if (backendId !== qrLtBackend.id) void this.switchCaptureMode(backendId);
       },
     });
   }
@@ -377,7 +382,7 @@ export class NegotiatingReceiverSession {
     this.videoElement = videoElement;
     this.scannerOpts = opts;
     this.unsubscribe = this.scanner.onDecode((frame) => this.handleFrame(frame));
-    await this.scanner.start(videoElement, { ...opts, rawFrames: false });
+    await this.scanner.start(videoElement, { ...opts, rawFrames: false, decodeBytes: false });
   }
 
   stop(): void {
@@ -419,10 +424,13 @@ export class NegotiatingReceiverSession {
     }
   }
 
-  private async switchToRawFrames(): Promise<void> {
+  private async switchCaptureMode(backendId: string): Promise<void> {
     this.scanner.stop();
     try {
-      await this.scanner.start(this.videoElement, { ...this.scannerOpts, rawFrames: true });
+      await this.scanner.start(this.videoElement, {
+        ...this.scannerOpts,
+        ...scannerOptionsForBackend(backendId),
+      });
     } catch (err) {
       this.callbacks.onError?.(err);
     }

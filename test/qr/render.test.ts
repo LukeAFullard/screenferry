@@ -3,6 +3,11 @@ import jsQR from 'jsqr';
 import { computeQrModules } from '../../src/backends/qr-lt/encode';
 import { rasterizeQrModules } from '../../src/backends/qr-lt/raster';
 import { createFountainEncoder, FountainDecoder } from '../../src/backends/qr-lt/fountain';
+import {
+  createFountainEncoder as createBinFountainEncoder,
+  FountainByteDecoder,
+} from '../../src/backends/qr-bin-lt/fountain';
+import { bytesEqual } from '../helpers/bytes';
 
 function decodeModulesWithJsQr(modules: boolean[][]): string | null {
   const { data, width, height } = rasterizeQrModules(modules);
@@ -68,6 +73,39 @@ describe('QR encode/render layer', () => {
 
     expect(decoder.isComplete()).toBe(true);
     expect(decoder.getResult()).toEqual(original);
+  });
+
+  it('renders byte-mode data (a Uint8Array) directly, without text mode/case-folding', () => {
+    const bytes = new Uint8Array([0, 1, 2, 253, 254, 255, 65, 97]); // includes non-text bytes
+    const { modules } = computeQrModules(bytes);
+    const { data, width, height } = rasterizeQrModules(modules);
+    const result = jsQR(data, width, height);
+
+    expect(result).not.toBeNull();
+    expect(new Uint8Array(result!.binaryData)).toEqual(bytes);
+  });
+
+  it('renders a full byte-mode fountain part stream (qr-bin-lt) that round-trips via jsQR alone', async () => {
+    const original = new TextEncoder().encode(
+      'screenferry end-to-end byte-mode QR loopback test payload'.repeat(20),
+    );
+    const encoder = createBinFountainEncoder(original, { maxFragmentLength: 150 });
+    const decoder = new FountainByteDecoder();
+
+    let attempts = 0;
+    for await (const part of encoder) {
+      const { modules } = computeQrModules(part);
+      const { data, width, height } = rasterizeQrModules(modules);
+      const scanned = jsQR(data, width, height);
+      expect(scanned).not.toBeNull();
+      decoder.receivePart(new Uint8Array(scanned!.binaryData));
+
+      attempts++;
+      if (decoder.isComplete() || attempts > 200) break;
+    }
+
+    expect(decoder.isComplete()).toBe(true);
+    expect(bytesEqual(decoder.getResult(), original)).toBe(true);
   });
 
   it('applies at least a 4-module quiet zone by default', () => {

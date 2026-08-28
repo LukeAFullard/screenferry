@@ -84,13 +84,15 @@
     <p>
       A basic manual test harness — not part of the library, not published. Uses the negotiated API
       (<code>preferredBackend</code>), so it exercises <code>qrLtBackend</code>,
-      <code>cimbarBackend</code>, and the header-frame auto-detection between them.
+      <code>qrBinLtBackend</code>, <code>cimbarBackend</code>, and the header-frame auto-detection
+      between them.
     </p>
 
     <p>
       <label>Backend: </label>
       <select id="backend">
         <option value="qr-lt" selected>qr-lt (default, well-tested)</option>
+        <option value="qr-bin-lt">qr-bin-lt (byte-mode QR, ~39% more payload/frame)</option>
         <option value="cimbar">cimbar (opt-in — see README's Cimbar section)</option>
         <option value="auto">auto (negotiated)</option>
       </select>
@@ -119,13 +121,13 @@
         >fps: <input type="number" id="tune-fps" value="10" min="1" max="60" style="width: 4em"
       /></label>
       <label
-        >fragmentSize (qr-lt only):
+        >fragmentSize (qr-lt / qr-bin-lt only):
         <input
           type="number"
           id="tune-fragment"
           placeholder="auto"
           min="50"
-          max="2000"
+          max="3000"
           style="width: 6em"
       /></label>
       <label

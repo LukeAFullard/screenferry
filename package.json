@@ -43,6 +43,7 @@
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "qr:capacity": "node scripts/qr-capacity.mjs",
+    "qr-bin:capacity": "node scripts/qr-bin-capacity.mjs",
     "demo": "vite build && npx --yes serve -l 5500 ."
   },
   "license": "MIT",

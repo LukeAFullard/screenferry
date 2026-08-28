@@ -113,6 +113,90 @@ If you have frame data from somewhere other than a camera (a test harness,
 a future screen-share receiver), use `StreamDecoder` directly — feed it
 strings via `addFrame()`, check `.isComplete`, then `await .getResult()`.
 
+**Scanning automatically prefers luminance-only capture when it's
+available**, for both `qrLtBackend` and `qrBinLtBackend` — no option to set,
+this just happens inside `Scanner`. Color carries no information for a QR
+decode (unlike Cimbar's color-coded cells), so `Camera.grabLumaFrame()`
+captures only a camera's native luminance plane (1 byte/pixel, straight off
+the same WebCodecs `MediaStreamTrackProcessor` path `cimbarBackend`'s
+`rawFrames` mode uses) instead of `grabFrame()`'s full `<canvas>`
+`drawImage`/`getImageData` RGBA round trip — a real color-processing hop
+that was pure waste for a decode that only ever reads grayscale. The decode
+worker expands the captured luma plane back to a minimal grayscale RGBA
+buffer right before handing it to zxing-wasm/jsQR (neither accepts raw
+luminance through its public API), so this only saves the *capture* and
+`postMessage` cost, not the decode itself — but capture (a full-resolution
+canvas composite) is the more expensive half. Falls back to `grabFrame`'s
+canvas/RGBA path automatically wherever the native capture path isn't
+available (same fallback `cimbarBackend`'s `rawFrames` mode already relies
+on), so this is safe everywhere with no behavior change beyond speed.
+
+## Byte-mode QR backend (qr-bin-lt, opt-in)
+
+`qrBinLtBackend` is the same Luby Transform fountain coding as
+`qrLtBackend`, rendered as **byte-mode** QR data instead of bytewords text —
+about **39% more payload per frame** at identical frame rate, ECC level, and
+module count, with no extra runtime dependency (no WASM, no GPU — it works
+anywhere `qrLtBackend` does).
+
+**Why this is faster.** QR v40 at ECC L holds 2953 bytes in byte mode, but
+only 4296 *characters* in alphanumeric mode. `qrLtBackend` renders its
+fountain parts as [bc-ur](https://github.com/ngraveio/bc-ur) UR strings —
+bytewords-encoded text, 2 characters per payload byte — so alphanumeric mode
+recovers some of that gap but not all of it, landing at ~2111 usable payload
+bytes per frame (`qrLtBackend`'s `DEFAULT_MAX_FRAGMENT_LENGTH`, see
+`scripts/qr-capacity.mjs`). `qrBinLtBackend` skips bytewords and the `ur:`
+URI wrapper entirely: it fountain-encodes with bc-ur's own `FountainEncoder`
+directly (a deep import — `@ngraveio/bc-ur` has no `exports` map, so this is
+legal, not a hack) and renders each part's raw CBOR bytes as byte-mode QR
+data, landing at ~2931 bytes per frame instead (`qrBinLtBackend`'s own
+`DEFAULT_MAX_FRAGMENT_LENGTH`, see `scripts/qr-bin-capacity.mjs`).
+
+**A separate backend id, not a mode flag on `qrLtBackend`.** This is a wire
+format change — a `qrBinLtBackend` frame (`Uint8Array`) can't be decoded by
+anything expecting `qrLtBackend`'s UR text frames, or vice versa. The
+existing header/beacon negotiation exists to make that safe:
+
+```ts
+import { encodeToFrames, DisplayDriver, NegotiatingReceiverSession } from 'screenferry';
+
+// sending
+const driver = new DisplayDriver(encodeToFrames(file, { preferredBackend: 'qr-bin-lt' }), canvas);
+driver.start();
+
+// receiving — never told which backend the sender picked
+const session = new NegotiatingReceiverSession({ onComplete, onError });
+await session.start(video);
+```
+
+`"auto"` (see "Backend negotiation" below) deliberately **never** resolves
+to `qrBinLtBackend` on its own, even when Cimbar isn't available and
+`qrBinLtBackend` would otherwise be a strict improvement — a sender on a
+newer version of this library shouldn't silently become unreadable by a
+receiver on an older one that doesn't recognize the `qr-bin-lt` header id
+(`backendForId` returns `undefined` for it, and the receiver just keeps
+waiting). Opt into it explicitly — `preferredBackend: 'qr-bin-lt'` above, or
+pin it directly (`backend: qrBinLtBackend` / `new StreamDecoder(qrBinLtBackend)`,
+mirroring `qrLtBackend`'s own pinned usage) — once you know your receivers
+support it.
+
+**Frame shape differs from `qrLtBackend`.** `Frame` for this backend is a
+raw `Uint8Array` (a fountain part, meant to be rendered directly as
+byte-mode QR data), not a UR part string. `DisplayDriver` already handles
+this transparently (`renderQrToCanvas` accepts either a `string` or a
+`Uint8Array`). A receiver using the *pinned* (non-negotiated) API needs to
+tell `Scanner` to decode bytes instead of text explicitly, via
+`decodeBytes: true`, and pass the matching `backend` to
+`StreamDecoder`/`ReceiverSession` — nothing checks that the two agree
+(`NegotiatingReceiverSession` handles this automatically once negotiated).
+
+```ts
+import { qrBinLtBackend, ReceiverSession } from 'screenferry';
+
+const session = new ReceiverSession({ onComplete, onError }, qrBinLtBackend);
+await session.start(video, { decodeBytes: true });
+```
+
 ## Cimbar backend (v2, opt-in)
 
 `cimbarBackend` wraps [libcimbar](https://github.com/sz3/libcimbar)'s
@@ -428,11 +512,13 @@ or `rawFrames` yourself in this mode.
 
 - `"auto"` — tries `cimbarBackend` (via `probeCimbarAvailable()`, which
   never throws); falls back to `qrLtBackend` if it's not usable here
-  (unsupported browser, WASM blocked by CSP, non-browser host).
-- `"qr-lt"` / `"cimbar"` — pin one explicitly, but *still* negotiated
-  (still sends the header frame) — useful if you want negotiation's
-  receiver-side auto-detection without `"auto"`'s runtime capability
-  probe.
+  (unsupported browser, WASM blocked by CSP, non-browser host). Never
+  resolves to `qrBinLtBackend` on its own — see its section above for why.
+- `"qr-lt"` / `"qr-bin-lt"` / `"cimbar"` — pin one explicitly, but *still*
+  negotiated (still sends the header frame) — useful if you want
+  negotiation's receiver-side auto-detection without `"auto"`'s runtime
+  capability probe (or, for `"qr-bin-lt"`, without its compatibility
+  caveat).
 
 If you don't need any of this — both ends are your own code and you
 already know which backend to use — the plain `backend`/`rawFrames`
@@ -519,7 +605,7 @@ npm publishes, just not committed.
 The public API is exactly what the package's root export (`import ... from
 'screenferry'`) exposes: `encodeToFrames`, `DisplayDriver`, `Scanner`,
 `Camera`, `StreamDecoder`, `ReceiverSession`, `IntegrityError`,
-`qrLtBackend`, `cimbarBackend`, `NegotiatingStreamDecoder`,
+`qrLtBackend`, `qrBinLtBackend`, `cimbarBackend`, `NegotiatingStreamDecoder`,
 `NegotiatingReceiverSession`, `probeCimbarAvailable`,
 `resolvePreferredBackend`, and their associated option/type exports
 (`TransferBackend`, `Frame`, `ImageFrame`, `CimbarEncodeOptions`,

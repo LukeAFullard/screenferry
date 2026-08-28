@@ -4,10 +4,15 @@ import {
   encodeToFrames,
   NegotiatingStreamDecoder,
   qrLtBackend,
+  qrBinLtBackend,
   cimbarBackend,
   resolvePreferredBackend,
 } from '../../src/index';
-import { decodeHeaderFrame, encodeHeaderFrame } from '../../src/backends/negotiation';
+import {
+  decodeHeaderFrame,
+  encodeHeaderFrame,
+  scannerOptionsForBackend,
+} from '../../src/backends/negotiation';
 import type { Frame } from '../../src/backends/types';
 import { computeQrModules } from '../../src/backends/qr-lt/encode';
 import { rasterizeQrModules } from '../../src/backends/qr-lt/raster';
@@ -25,7 +30,7 @@ async function blobBytes(blob: Blob): Promise<Uint8Array> {
 
 describe('header/beacon frame', () => {
   it('round-trips through an actual QR render+scan cycle, for every backend id', () => {
-    for (const backend of [qrLtBackend, cimbarBackend]) {
+    for (const backend of [qrLtBackend, qrBinLtBackend, cimbarBackend]) {
       const header = encodeHeaderFrame(backend.id);
       const scanned = decodeAsPlainQr(header);
       // Not necessarily case-identical to `header` — the QR layer
@@ -42,8 +47,27 @@ describe('header/beacon frame', () => {
     expect(decodeHeaderFrame('ur:bytes/1-1/lpadaobncpft')).toBeUndefined();
   });
 
-  it('is undefined for a non-string Frame', () => {
+  it('is undefined for an ImageFrame', () => {
     expect(decodeHeaderFrame({ data: new Uint8Array(1), width: 1, height: 1 })).toBeUndefined();
+  });
+
+  it('is also recognized from a Uint8Array frame (post-switch to byte-mode decoding)', () => {
+    const header = encodeHeaderFrame('qr-bin-lt');
+    const asBytes = new TextEncoder().encode(header);
+    expect(decodeHeaderFrame(asBytes)).toBe('qr-bin-lt');
+  });
+
+  it('is undefined for arbitrary bytes that are not a header frame', () => {
+    expect(decodeHeaderFrame(new Uint8Array([1, 2, 3]))).toBeUndefined();
+  });
+});
+
+describe('scannerOptionsForBackend', () => {
+  it('maps cimbar to rawFrames, qr-bin-lt to decodeBytes, and qr-lt to neither', () => {
+    expect(scannerOptionsForBackend('cimbar')).toEqual({ rawFrames: true });
+    expect(scannerOptionsForBackend('qr-bin-lt')).toEqual({ decodeBytes: true });
+    expect(scannerOptionsForBackend('qr-lt')).toEqual({});
+    expect(scannerOptionsForBackend('unknown')).toEqual({});
   });
 });
 
@@ -56,8 +80,13 @@ describe('resolvePreferredBackend', () => {
     };
 
     expect(await resolvePreferredBackend('qr-lt', probe)).toBe(qrLtBackend);
+    expect(await resolvePreferredBackend('qr-bin-lt', probe)).toBe(qrBinLtBackend);
     expect(await resolvePreferredBackend('cimbar', probe)).toBe(cimbarBackend);
     expect(probed).toBe(false);
+  });
+
+  it('"auto" never resolves to qr-bin-lt, even when cimbar is unavailable (compatibility with older receivers)', async () => {
+    expect(await resolvePreferredBackend('auto', async () => false)).toBe(qrLtBackend);
   });
 
   it('"auto" resolves to cimbar when the capability probe succeeds', async () => {
@@ -98,6 +127,35 @@ describe('encodeToFrames({ preferredBackend })', () => {
     const first = (await iterator.next()).value;
 
     expect(decodeHeaderFrame(first as string)).toBe('cimbar');
+  });
+
+  it('round-trips a full negotiated qr-bin-lt transfer end to end (no WASM needed)', async () => {
+    const bytes = pseudoRandomBytes(10_000, 96);
+    const file = new File([bytes], 'bin-negotiated.bin', { type: 'application/octet-stream' });
+
+    let resolvedBackendId: string | undefined;
+    const decoder = new NegotiatingStreamDecoder({
+      onBackendResolved: (id) => {
+        resolvedBackendId = id;
+      },
+    });
+
+    let attempts = 0;
+    for await (const frame of encodeToFrames(file, {
+      preferredBackend: 'qr-bin-lt',
+      fragmentSize: 300,
+    })) {
+      decoder.addFrame(frame);
+      attempts++;
+      if (decoder.isComplete || attempts > 2000) break;
+    }
+
+    expect(resolvedBackendId).toBe('qr-bin-lt');
+    expect(decoder.backendId).toBe('qr-bin-lt');
+    expect(decoder.isComplete).toBe(true);
+    const result = await decoder.getResult();
+    expect((result as File).name).toBe('bin-negotiated.bin');
+    expect(bytesEqual(await blobBytes(result), bytes)).toBe(true);
   });
 
   it('repeats the header frame every N data frames', async () => {

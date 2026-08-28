@@ -19,12 +19,14 @@ export interface ImageFrame {
 }
 
 /**
- * A single unit of transmitted data. A QR/LT backend's frame is a string (a
- * UR part, meant to be rendered as a QR code); an image-based backend (e.g.
- * Cimbar) hands back rendered pixel data instead — kept generic here so the
- * interface doesn't bake in "frames are always text."
+ * A single unit of transmitted data. `qrLtBackend`'s frame is a string (a
+ * bytewords-text UR part, meant to be rendered as a QR code); `qrBinLtBackend`'s
+ * is a raw `Uint8Array` (a fountain part meant to be rendered as *byte-mode*
+ * QR data instead — see its doc comment); an image-based backend (e.g.
+ * Cimbar) hands back rendered pixel data (`ImageFrame`) instead — kept
+ * generic here so the interface doesn't bake in "frames are always text."
  */
-export type Frame = string | ImageFrame;
+export type Frame = string | ImageFrame | Uint8Array;
 
 /** Reassembles a stream of `Frame`s back into the original envelope bytes. */
 export interface BackendDecoder<F extends Frame = Frame> {

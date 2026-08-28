@@ -9,20 +9,21 @@ export interface RenderQrOptions extends QrEncodeOptions {
 }
 
 /**
- * Renders `text` (a raw UR part string, unmodified in meaning) as a QR code
- * onto `canvas`, sized to fit exactly. Rasterizes to a plain RGBA buffer
- * (`rasterizeQrModules`) and blits it in one `putImageData` call rather than
- * one `fillRect` per dark module — a QR v40 code has ~15,000 dark modules,
- * so that was ~15,000 draw calls per frame; crisp module edges still matter
- * for camera decode, which `rasterizeQrModules`'s pure pixel-buffer
- * rasterization gives for free (no anti-aliasing to disable).
+ * Renders `data` — a raw UR part string (`qrLtBackend`) or a raw fountain
+ * part's bytes, rendered as byte-mode QR data (`qrBinLtBackend`) — as a QR
+ * code onto `canvas`, sized to fit exactly. Rasterizes to a plain RGBA
+ * buffer (`rasterizeQrModules`) and blits it in one `putImageData` call
+ * rather than one `fillRect` per dark module — a QR v40 code has ~15,000
+ * dark modules, so that was ~15,000 draw calls per frame; crisp module
+ * edges still matter for camera decode, which `rasterizeQrModules`'s pure
+ * pixel-buffer rasterization gives for free (no anti-aliasing to disable).
  */
 export function renderQrToCanvas(
-  text: string,
+  qrData: string | Uint8Array,
   canvas: HTMLCanvasElement,
   opts?: RenderQrOptions,
 ): void {
-  const { modules } = computeQrModules(text, opts);
+  const { modules } = computeQrModules(qrData, opts);
   const { data, width, height } = rasterizeQrModules(modules, opts);
 
   canvas.width = width;

@@ -19,6 +19,16 @@ export interface ScannerOptions extends CameraOptions {
    * v1 behavior, unchanged).
    */
   rawFrames?: boolean;
+  /**
+   * When true (and `rawFrames` is false), the built-in QR decode worker
+   * hands back each decoded symbol's raw bytes (`Uint8Array`) via
+   * `onDecode` instead of its text — for a backend (e.g. `qrBinLtBackend`)
+   * whose `Frame` is raw bytes rather than a UR part string. Pair this with
+   * passing the matching `backend` to `StreamDecoder`/`ReceiverSession`;
+   * nothing checks that the two agree. Defaults to `false` (text, v1
+   * behavior, unchanged).
+   */
+  decodeBytes?: boolean;
 }
 
 type DecodeCallback = (frame: Frame) => void;
@@ -28,11 +38,11 @@ const DEFAULT_SCAN_HZ = 20;
 
 /**
  * Camera-facing scanner: captures frames and reports decoded content (QR
- * text by default, or raw pixels in `rawFrames` mode). Deliberately knows
- * nothing about fountain parts or transfer state — that's `StreamDecoder`'s
- * job (Stage 6) — so this stays testable without a camera (worker protocol
- * only) and swappable (e.g. screen-share frames instead of a camera, later)
- * without touching decode logic.
+ * text or bytes by default, or raw pixels in `rawFrames` mode). Deliberately
+ * knows nothing about fountain parts or transfer state — that's
+ * `StreamDecoder`'s job (Stage 6) — so this stays testable without a camera
+ * (worker protocol only) and swappable (e.g. screen-share frames instead of
+ * a camera, later) without touching decode logic.
  */
 export class Scanner {
   private camera: Camera | undefined;
@@ -41,6 +51,7 @@ export class Scanner {
   private nextRequestId = 0;
   private pendingDecode = false;
   private pendingRawFrame = false;
+  private decodeBytes = false;
   private readonly callbacks = new Set<DecodeCallback>();
 
   onDecode(callback: DecodeCallback): Unsubscribe {
@@ -66,13 +77,22 @@ export class Scanner {
       return;
     }
 
+    this.decodeBytes = opts?.decodeBytes ?? false;
+
     this.worker = new Worker(new URL('./decode.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<DecodeWorkerResponse>) => {
       this.pendingDecode = false;
       const message = event.data;
 
       if (message.type === 'result') {
-        for (const callback of this.callbacks) callback(message.text);
+        // `bytes` can be `null` even when `text` isn't (a decoder that
+        // doesn't populate one) -- skip rather than emit a misleading
+        // empty buffer in that case.
+        if (this.decodeBytes) {
+          if (message.bytes) for (const callback of this.callbacks) callback(message.bytes);
+        } else {
+          for (const callback of this.callbacks) callback(message.text);
+        }
       } else if (message.type === 'error') {
         console.warn('[screenferry] decode worker error:', message.message);
       }
@@ -95,17 +115,46 @@ export class Scanner {
 
     this.pendingDecode = false;
     this.pendingRawFrame = false;
+    this.decodeBytes = false;
   }
 
   private tick(): void {
     if (this.pendingDecode || !this.camera || !this.worker) return;
+    const camera = this.camera;
+    const worker = this.worker;
 
-    const imageData = this.camera.grabFrame();
-    if (!imageData) return;
-
+    // Reserves the one-decode-in-flight slot for the duration of the
+    // capture below, which (via `grabLumaFrame`) is async unlike the old
+    // always-`grabFrame` path -- cleared either by `worker.onmessage`
+    // above once a response arrives, or, if nothing ends up posted (no
+    // frame available), directly in the branches below.
     this.pendingDecode = true;
-    const request: DecodeWorkerRequest = { id: this.nextRequestId++, imageData };
-    this.worker.postMessage(request);
+
+    void camera
+      .grabLumaFrame()
+      .then((luma) => {
+        // Color carries no information for a QR decode -- the camera's
+        // native luminance plane (1 byte/pixel) is preferred over
+        // `grabFrame`'s full canvas/RGBA capture whenever it's available;
+        // see `Camera.grabLumaFrame`'s doc comment.
+        if (luma) {
+          const request: DecodeWorkerRequest = { id: this.nextRequestId++, luma };
+          worker.postMessage(request);
+          return;
+        }
+
+        const imageData = camera.grabFrame();
+        if (!imageData) {
+          this.pendingDecode = false;
+          return;
+        }
+        const request: DecodeWorkerRequest = { id: this.nextRequestId++, imageData };
+        worker.postMessage(request);
+      })
+      .catch((err: unknown) => {
+        console.warn('[screenferry] frame capture failed:', err);
+        this.pendingDecode = false;
+      });
   }
 
   private tickRaw(): void {

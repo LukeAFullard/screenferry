@@ -42,9 +42,18 @@ function preferAlphanumericCasing(text: string): string {
   return upper.toLowerCase() === text ? upper : text;
 }
 
-/** Computes the raw QR module grid for `text`. Pure — no canvas/DOM involved. */
-export function computeQrModules(text: string, opts?: QrEncodeOptions): QrModuleGrid {
-  const result = uqrEncode(preferAlphanumericCasing(text), {
+/**
+ * Computes the raw QR module grid for `data`. Pure — no canvas/DOM
+ * involved. A `string` renders as text (alphanumeric mode where possible,
+ * via `preferAlphanumericCasing` — used by `qrLtBackend`'s bytewords parts);
+ * a `Uint8Array` renders as byte-mode QR data directly, with no text
+ * encoding or case-folding involved (used by `qrBinLtBackend`'s raw
+ * fountain parts — see its doc comment for why that gets more payload per
+ * frame). `uqr` dispatches purely on the JS type of what it's given
+ * (`Array.isArray` for byte mode), so there's no separate flag to set.
+ */
+export function computeQrModules(data: string | Uint8Array, opts?: QrEncodeOptions): QrModuleGrid {
+  const result = uqrEncode(typeof data === 'string' ? preferAlphanumericCasing(data) : [...data], {
     ecc: opts?.eccLevel ?? DEFAULT_ECC_LEVEL,
     maxVersion: opts?.maxVersion ?? DEFAULT_MAX_QR_VERSION,
     border: 0,

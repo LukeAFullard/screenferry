@@ -178,23 +178,8 @@ export class Camera {
    * screen right now" pull like `<video>` + `drawImage`.
    */
   async grabNativeFrame(): Promise<ImageFrame | undefined> {
-    if (this.frameReader) {
-      let videoFrame: VideoFrame | undefined;
-      try {
-        videoFrame = await this.readLatestVideoFrame();
-        if (videoFrame) {
-          const frame = await this.videoFrameToImageFrame(videoFrame);
-          if (frame) return frame;
-        }
-      } catch (err) {
-        console.warn(
-          '[screenferry] native VideoFrame capture failed, falling back to canvas/RGBA:',
-          err,
-        );
-      } finally {
-        videoFrame?.close();
-      }
-    }
+    const frame = await this.captureNativeFrame();
+    if (frame) return frame;
 
     const imageData = this.grabFrame();
     if (!imageData) return undefined;
@@ -209,6 +194,52 @@ export class Camera {
       height: imageData.height,
       format: 'rgba',
     };
+  }
+
+  /**
+   * Captures one frame's luminance plane only, straight off the same
+   * native NV12/I420 capture `grabNativeFrame` uses — for a QR decode,
+   * where color carries no information (unlike Cimbar's color-coded
+   * cells), capturing and shipping the other 3/4 of an RGBA frame to the
+   * decode worker is pure waste. Y is always NV12/I420's first plane,
+   * tightly packed at offset 0 with stride === width (verified by
+   * `videoFrameToImageFrame`'s `planesArePacked` check before a frame ever
+   * reaches here), so this needs no separate WebCodecs read — just the
+   * leading `width * height` bytes of an already-captured native frame.
+   *
+   * Returns `undefined` when the native capture path itself is unavailable
+   * (unsupported browser) or failed for any reason, mirroring
+   * `grabNativeFrame`'s own fallback — the caller (`Scanner`) falls back to
+   * `grabFrame`'s canvas/RGBA path in that case.
+   */
+  async grabLumaFrame(): Promise<{ data: Uint8Array; width: number; height: number } | undefined> {
+    const frame = await this.captureNativeFrame();
+    if (!frame) return undefined;
+
+    return {
+      data: frame.data.subarray(0, frame.width * frame.height),
+      width: frame.width,
+      height: frame.height,
+    };
+  }
+
+  /** Shared native-capture attempt behind `grabNativeFrame`/`grabLumaFrame` — `undefined` on any failure or if the native path isn't available, with no RGBA fallback of its own (each caller applies its own). */
+  private async captureNativeFrame(): Promise<ImageFrame | undefined> {
+    if (!this.frameReader) return undefined;
+
+    let videoFrame: VideoFrame | undefined;
+    try {
+      videoFrame = await this.readLatestVideoFrame();
+      if (videoFrame) return await this.videoFrameToImageFrame(videoFrame);
+    } catch (err) {
+      console.warn(
+        '[screenferry] native VideoFrame capture failed, falling back to canvas/RGBA:',
+        err,
+      );
+    } finally {
+      videoFrame?.close();
+    }
+    return undefined;
   }
 
   /**
