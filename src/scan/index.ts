@@ -47,7 +47,7 @@ const DEFAULT_SCAN_HZ = 20;
 export class Scanner {
   private camera: Camera | undefined;
   private worker: Worker | undefined;
-  private intervalHandle: ReturnType<typeof setInterval> | undefined;
+  private timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   private nextRequestId = 0;
   private pendingDecode = false;
   private pendingRawFrame = false;
@@ -73,7 +73,7 @@ export class Scanner {
     const scanHz = opts?.scanHz ?? DEFAULT_SCAN_HZ;
 
     if (opts?.rawFrames) {
-      this.intervalHandle = setInterval(() => this.tickRaw(), 1000 / scanHz);
+      this.startSampling(() => this.tickRaw(), scanHz);
       return;
     }
 
@@ -98,13 +98,39 @@ export class Scanner {
       }
     };
 
-    this.intervalHandle = setInterval(() => this.tick(), 1000 / scanHz);
+    this.startSampling(() => this.tick(), scanHz);
+  }
+
+  /**
+   * Schedules `tickFn` at roughly `1000 / scanHz` ms, via a self-rescheduling
+   * `setTimeout` chain rather than a fixed-period `setInterval`. A few ms of
+   * random jitter per cycle is added on top of the base interval: a
+   * perfectly periodic sampler against a sender that redraws at its own
+   * fixed period can phase-lock onto the display's transition window (e.g.
+   * the `scanHz: 20` / `fps: 10` defaults sample at 0/50/100/150ms against
+   * redraws at 0/100/200ms — every other sample lands mid-transition),
+   * tanking read rate for the rest of the transfer. Jitter makes that lock
+   * impossible for a couple of lines of code.
+   */
+  private startSampling(tickFn: () => void, scanHz: number): void {
+    const baseMs = 1000 / scanHz;
+    const jitterMs = Math.min(baseMs * 0.1, 5);
+
+    const scheduleNext = (): void => {
+      const delay = Math.max(0, baseMs + (Math.random() * 2 - 1) * jitterMs);
+      this.timeoutHandle = setTimeout(() => {
+        tickFn();
+        scheduleNext();
+      }, delay);
+    };
+
+    scheduleNext();
   }
 
   stop(): void {
-    if (this.intervalHandle !== undefined) {
-      clearInterval(this.intervalHandle);
-      this.intervalHandle = undefined;
+    if (this.timeoutHandle !== undefined) {
+      clearTimeout(this.timeoutHandle);
+      this.timeoutHandle = undefined;
     }
 
     this.worker?.terminate();
@@ -139,7 +165,11 @@ export class Scanner {
         // see `Camera.grabLumaFrame`'s doc comment.
         if (luma) {
           const request: DecodeWorkerRequest = { id: this.nextRequestId++, luma };
-          worker.postMessage(request);
+          // Transfers `luma.data`'s backing buffer instead of structured-clone
+          // copying it -- safe because `grabLumaFrame` hands back a fresh
+          // `.slice()`'d buffer nothing else in `Camera` retains a reference
+          // to.
+          worker.postMessage(request, [luma.data.buffer]);
           return;
         }
 
@@ -149,7 +179,9 @@ export class Scanner {
           return;
         }
         const request: DecodeWorkerRequest = { id: this.nextRequestId++, imageData };
-        worker.postMessage(request);
+        // `grabFrame` returns a freshly allocated `ImageData` per call (via
+        // `getImageData`), so transferring its buffer is equally safe here.
+        worker.postMessage(request, [imageData.data.buffer]);
       })
       .catch((err: unknown) => {
         console.warn('[screenferry] frame capture failed:', err);

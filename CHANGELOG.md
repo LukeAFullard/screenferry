@@ -17,6 +17,24 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Fixed
 
+- `Scanner`'s decode-worker `postMessage` calls used no transfer list, so
+  every captured frame was structured-clone *copied* into the worker
+  rather than moved — and `Camera.grabLumaFrame` compounded it by handing
+  back a `.subarray()` view onto its native NV12/I420 capture's full
+  backing buffer, so the clone still carried 1.5 bytes/pixel even though
+  the returned `LumaFrame` claimed 1. `grabLumaFrame` now `.slice()`s the
+  luma plane into its own freshly allocated buffer (nothing else holds a
+  reference to it), and `Scanner.tick` transfers that buffer (and
+  `grabFrame`'s `ImageData` buffer, in the RGBA fallback path) via
+  `postMessage`'s transfer list — a real 4× reduction against the old RGBA
+  path, not 2.7×, with zero remaining copy.
+- The receiver's fixed-period `setInterval` scan loop could phase-lock
+  onto the sender's display refresh: with the library's own defaults
+  (`scanHz: 20`, `fps: 10`), every other sample landed exactly on the
+  display's transition window, since both are simple multiples of the
+  same 50ms period. `Scanner` now schedules its camera-sampling loop via a
+  self-rescheduling `setTimeout` chain with a few ms of random jitter per
+  cycle, which makes that lock impossible for near-zero cost.
 - `examples/app.html`'s Cimbar demo was unreadable by any real camera, and
   the previous round's own fix/guidance for this made it worse in two
   ways, found by reading libcimbar's actual C++ source (`GridConf.h`'s
@@ -159,6 +177,14 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Added
 
+- **Goodput measurement.** `ReceiverSession`/`NegotiatingReceiverSession`
+  gained a `goodput` getter — decoded (accepted) frames/sec over a
+  trailing 2s window, via a new internal `GoodputTracker`
+  (`src/scan/goodput.ts`). Previously nothing counted decoded frames per
+  second anywhere in the project, so every `fps`/`scanHz` tuning decision
+  was guesswork; this turns "is fps 10 or 20 better" into a number you can
+  read off the demo page mid-transfer (`examples/app.html`'s sections 1
+  and 3 now show it next to the progress percentage).
 - **Backend negotiation (Stage 11).** `encodeToFrames` accepts
   `preferredBackend: "auto" | "qr-lt" | "cimbar"` instead of `backend` —
   `"auto"` probes `cimbarBackend`'s availability

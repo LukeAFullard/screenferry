@@ -132,6 +132,24 @@ describe('ReceiverSession', () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
+  it('tracks goodput (decoded frames/sec) as valid frames are received', async () => {
+    FakeScanner.instances.length = 0;
+    const bytes = pseudoRandomBytes(2000, 33);
+    const frames = await collectFrames(bytes, 500);
+
+    const session = new ReceiverSession();
+    await session.start();
+    const scanner = FakeScanner.instances[FakeScanner.instances.length - 1];
+
+    expect(session.goodput).toBe(0);
+
+    scanner.emit(frames[0]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    scanner.emit(frames[1]);
+
+    expect(session.goodput).toBeGreaterThan(0);
+  });
+
   it('stop() unsubscribes and stops the scanner', async () => {
     FakeScanner.instances.length = 0;
     const session = new ReceiverSession();

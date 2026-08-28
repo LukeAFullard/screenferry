@@ -391,7 +391,8 @@
             },
             onProgress: (p) => {
               progress.value = p;
-              status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%`;
+              const goodput = session.goodput;
+              status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
             onComplete: (resultFile) => {
               status.textContent = `done: "${resultFile.name}" (${resultFile.size} bytes) via ${backend}`;
@@ -503,7 +504,8 @@
             },
             onProgress: (p) => {
               progress.value = p;
-              status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)`;
+              const goodput = session.goodput;
+              status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
             onComplete: (file) => {
               status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type})`;

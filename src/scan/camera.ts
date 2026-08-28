@@ -211,13 +211,21 @@ export class Camera {
    * (unsupported browser) or failed for any reason, mirroring
    * `grabNativeFrame`'s own fallback — the caller (`Scanner`) falls back to
    * `grabFrame`'s canvas/RGBA path in that case.
+   *
+   * Uses `.slice()`, not `.subarray()`: a subarray stays a *view* onto
+   * `frame.data`'s full NV12/I420 backing buffer, so `postMessage`'s
+   * structured clone (even with a transfer list — see `Scanner.tick`)
+   * would still serialize all 1.5 bytes/pixel of it, not the 1 this
+   * method's return type implies. `.slice()` copies just the luma plane
+   * into a fresh, appropriately-sized buffer that's safe for the caller to
+   * transfer: nothing else in `Camera` holds a reference to it.
    */
   async grabLumaFrame(): Promise<{ data: Uint8Array; width: number; height: number } | undefined> {
     const frame = await this.captureNativeFrame();
     if (!frame) return undefined;
 
     return {
-      data: frame.data.subarray(0, frame.width * frame.height),
+      data: frame.data.slice(0, frame.width * frame.height),
       width: frame.width,
       height: frame.height,
     };
