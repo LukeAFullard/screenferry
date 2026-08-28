@@ -55,6 +55,29 @@ export declare class Camera {
      */
     grabNativeFrame(): Promise<ImageFrame | undefined>;
     /**
+     * Captures one frame's luminance plane only, straight off the same
+     * native NV12/I420 capture `grabNativeFrame` uses — for a QR decode,
+     * where color carries no information (unlike Cimbar's color-coded
+     * cells), capturing and shipping the other 3/4 of an RGBA frame to the
+     * decode worker is pure waste. Y is always NV12/I420's first plane,
+     * tightly packed at offset 0 with stride === width (verified by
+     * `videoFrameToImageFrame`'s `planesArePacked` check before a frame ever
+     * reaches here), so this needs no separate WebCodecs read — just the
+     * leading `width * height` bytes of an already-captured native frame.
+     *
+     * Returns `undefined` when the native capture path itself is unavailable
+     * (unsupported browser) or failed for any reason, mirroring
+     * `grabNativeFrame`'s own fallback — the caller (`Scanner`) falls back to
+     * `grabFrame`'s canvas/RGBA path in that case.
+     */
+    grabLumaFrame(): Promise<{
+        data: Uint8Array;
+        width: number;
+        height: number;
+    } | undefined>;
+    /** Shared native-capture attempt behind `grabNativeFrame`/`grabLumaFrame` — `undefined` on any failure or if the native path isn't available, with no RGBA fallback of its own (each caller applies its own). */
+    private captureNativeFrame;
+    /**
      * `frameReader.read()` resolves with the *next queued* frame, not "the
      * current one" -- if frames are produced faster than `grabNativeFrame`
      * is called (e.g. a 30fps camera sampled at a lower `scanHz`), a naive
@@ -213,12 +236,14 @@ export declare function encodeToFrames(file: Blob, opts: NegotiatedEncodeOptions
 export declare function encodeToFrames<F extends Frame = string>(file: Blob, opts?: EncodeOptions<F>): AsyncIterable<F>;
 
 /**
- * A single unit of transmitted data. A QR/LT backend's frame is a string (a
- * UR part, meant to be rendered as a QR code); an image-based backend (e.g.
- * Cimbar) hands back rendered pixel data instead — kept generic here so the
- * interface doesn't bake in "frames are always text."
+ * A single unit of transmitted data. `qrLtBackend`'s frame is a string (a
+ * bytewords-text UR part, meant to be rendered as a QR code); `qrBinLtBackend`'s
+ * is a raw `Uint8Array` (a fountain part meant to be rendered as *byte-mode*
+ * QR data instead — see its doc comment); an image-based backend (e.g.
+ * Cimbar) hands back rendered pixel data (`ImageFrame`) instead — kept
+ * generic here so the interface doesn't bake in "frames are always text."
  */
-export declare type Frame = string | ImageFrame;
+export declare type Frame = string | ImageFrame | Uint8Array;
 
 /**
  * Raw pixel data for one rendered/captured frame — same layout as DOM
@@ -275,8 +300,11 @@ export declare interface NegotiatedEncodeOptions {
  * (Stage 11) — the negotiated equivalent of `ReceiverSession`. Always
  * starts `Scanner` in its default QR text-decode mode (where the header
  * frame always lives); on detecting a non-`qr-lt` backend, restarts
- * `Scanner` with `rawFrames: true` and continues the transfer with the
- * right decoder. The caller never chooses a backend up front.
+ * `Scanner` in whichever capture mode that backend needs
+ * (`scannerOptionsForBackend` — `rawFrames` for an image-based backend like
+ * Cimbar, `decodeBytes` for a byte-mode QR backend like `qrBinLtBackend`)
+ * and continues the transfer with the right decoder. The caller never
+ * chooses a backend up front.
  *
  * The restart briefly stops and re-acquires the camera — unavoidable given
  * `Scanner`'s current design (see the README's Cimbar section on
@@ -300,7 +328,7 @@ export declare class NegotiatingReceiverSession {
         height: number;
     } | undefined;
     private handleFrame;
-    private switchToRawFrames;
+    private switchCaptureMode;
 }
 
 export declare interface NegotiatingReceiverSessionCallbacks extends ReceiverSessionCallbacks {
@@ -336,7 +364,7 @@ export declare interface NegotiatingStreamDecoderCallbacks {
     onBackendResolved?: (backendId: string) => void;
 }
 
-export declare type PreferredBackend = 'auto' | 'qr-lt' | 'cimbar';
+export declare type PreferredBackend = 'auto' | 'qr-lt' | 'qr-bin-lt' | 'cimbar';
 
 /**
  * Best-effort capability probe: does `cimbarBackend` actually work in this
@@ -348,6 +376,34 @@ export declare type PreferredBackend = 'auto' | 'qr-lt' | 'cimbar';
  * for why a deeper self-test isn't done here.
  */
 export declare function probeCimbarAvailable(): Promise<boolean>;
+
+/**
+ * The byte-mode QR backend: the same Luby Transform fountain coding as
+ * `qrLtBackend`, but rendered as byte-mode QR data (raw bytes) instead of
+ * bytewords text. `Frame` for this backend is always a `Uint8Array` — a raw
+ * fountain part, meant to be rendered directly as a byte-mode QR code (see
+ * `qr-lt/render.ts`'s `renderQrToCanvas`, which accepts either a `string`
+ * (for `qrLtBackend`) or a `Uint8Array` (for this backend)) and read back
+ * via a decoder's raw-bytes output (`ReadResult.bytes` for zxing-wasm,
+ * `QRCode.binaryData` for jsQR — see `Scanner`'s `decodeBytes` option).
+ *
+ * QR v40 at ECC L holds 2953 bytes in byte mode versus 4296 *characters* in
+ * alphanumeric mode — bc-ur's bytewords encoding (what `qrLtBackend` uses)
+ * spends 2 characters per payload byte, so alphanumeric mode only recovers
+ * some of that gap, not all of it. Skipping bytewords entirely and using
+ * byte mode directly gets roughly 2931 bytes of payload per frame (see
+ * `fountain.ts`'s `DEFAULT_MAX_FRAGMENT_LENGTH`) versus `qrLtBackend`'s
+ * 2111 — about 39% more payload per frame, at identical frame rate,
+ * ECC, and module count.
+ *
+ * A separate backend id from `qrLtBackend` (rather than a mode flag on it)
+ * deliberately, since this is a wire-format change — the existing header/
+ * beacon negotiation (`negotiation.ts`) already exists to make that safe: a
+ * sender and receiver on different versions degrade to `qrLtBackend`
+ * (whose header frame is always plain text, universally readable) instead
+ * of silently failing to decode.
+ */
+export declare const qrBinLtBackend: TransferBackend<Uint8Array>;
 
 declare interface QrEncodeOptions {
     /**
@@ -417,21 +473,27 @@ declare interface RenderQrOptions extends QrEncodeOptions {
 }
 
 /**
- * Resolves `"auto" | "qr-lt" | "cimbar"` to a concrete backend. `"auto"`
- * probes Cimbar's availability and falls back to `qrLtBackend` if it
- * isn't usable here. `probe` is injectable (defaults to
- * `probeCimbarAvailable`) purely for testing the resolution logic itself
- * without depending on a real WASM/browser environment.
+ * Resolves `PreferredBackend` to a concrete backend. `"auto"` probes
+ * Cimbar's availability and falls back to `qrLtBackend` if it isn't usable
+ * here — deliberately never `qrBinLtBackend`, even though it has no extra
+ * capability requirement over `qrLtBackend` and is strictly more
+ * throughput: `"auto"` exists so a sender always degrades to something a
+ * receiver on *any* version of this library can decode, and an older
+ * receiver's `backendForId` won't recognize `qr-bin-lt`. Opt into it
+ * explicitly (`preferredBackend: 'qr-bin-lt'`, or `backend: qrBinLtBackend`
+ * pinned) once you know your receivers support it. `probe` is injectable
+ * (defaults to `probeCimbarAvailable`) purely for testing the resolution
+ * logic itself without depending on a real WASM/browser environment.
  */
 export declare function resolvePreferredBackend(preferred: PreferredBackend, probe?: () => Promise<boolean>): Promise<TransferBackend<Frame>>;
 
 /**
  * Camera-facing scanner: captures frames and reports decoded content (QR
- * text by default, or raw pixels in `rawFrames` mode). Deliberately knows
- * nothing about fountain parts or transfer state — that's `StreamDecoder`'s
- * job (Stage 6) — so this stays testable without a camera (worker protocol
- * only) and swappable (e.g. screen-share frames instead of a camera, later)
- * without touching decode logic.
+ * text or bytes by default, or raw pixels in `rawFrames` mode). Deliberately
+ * knows nothing about fountain parts or transfer state — that's
+ * `StreamDecoder`'s job (Stage 6) — so this stays testable without a camera
+ * (worker protocol only) and swappable (e.g. screen-share frames instead of
+ * a camera, later) without touching decode logic.
  */
 export declare class Scanner {
     private camera;
@@ -440,6 +502,7 @@ export declare class Scanner {
     private nextRequestId;
     private pendingDecode;
     private pendingRawFrame;
+    private decodeBytes;
     private readonly callbacks;
     onDecode(callback: DecodeCallback): Unsubscribe;
     /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
@@ -470,6 +533,16 @@ export declare interface ScannerOptions extends CameraOptions {
      * v1 behavior, unchanged).
      */
     rawFrames?: boolean;
+    /**
+     * When true (and `rawFrames` is false), the built-in QR decode worker
+     * hands back each decoded symbol's raw bytes (`Uint8Array`) via
+     * `onDecode` instead of its text — for a backend (e.g. `qrBinLtBackend`)
+     * whose `Frame` is raw bytes rather than a UR part string. Pair this with
+     * passing the matching `backend` to `StreamDecoder`/`ReceiverSession`;
+     * nothing checks that the two agree. Defaults to `false` (text, v1
+     * behavior, unchanged).
+     */
+    decodeBytes?: boolean;
 }
 
 /**

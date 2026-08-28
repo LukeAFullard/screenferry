@@ -120,7 +120,10 @@ export class DisplayDriver {
     const { value, done } = await this.iterator.next();
     if (done || value === undefined || !this.running) return;
 
-    if (typeof value === 'string') {
+    if (typeof value === 'string' || value instanceof Uint8Array) {
+      // A string (`qrLtBackend`'s UR part text) or raw bytes
+      // (`qrBinLtBackend`'s fountain part, rendered as byte-mode QR data)
+      // both go through the same QR renderer — see `renderQrToCanvas`.
       renderQrToCanvas(value, this.canvas, this.opts);
     } else {
       this.renderImageFrame(value);

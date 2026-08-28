@@ -11,6 +11,7 @@ import {
   toErrorResponse,
   type DecodeWorkerRequest,
   type DecodeWorkerResponse,
+  type LumaFrame,
 } from './decode-logic';
 
 prepareZXingModule({
@@ -25,11 +26,43 @@ const decoder = createFrameDecoder({
       formats: ['QRCode'],
       maxNumberOfSymbols: 1,
     });
-    return results.find((result) => result.isValid)?.text ?? null;
+    const match = results.find((result) => result.isValid);
+    // `ReadResult.bytes`: raw content with no charset conversion --
+    // exactly what `qrBinLtBackend`'s byte-mode frames need back, as
+    // opposed to `.text`, which is `.bytes` rendered to unicode/utf8.
+    return { text: match?.text ?? null, bytes: match?.bytes ?? null };
   },
-  decodeWithJsQr: (imageData) =>
-    jsQR(imageData.data, imageData.width, imageData.height)?.data ?? null,
+  decodeWithJsQr: (imageData) => {
+    const result = jsQR(imageData.data, imageData.width, imageData.height);
+    return {
+      text: result?.data ?? null,
+      bytes: result ? new Uint8Array(result.binaryData) : null,
+    };
+  },
 });
+
+/**
+ * Expands a single-channel luminance buffer (`DecodeWorkerRequest`'s `luma`
+ * variant) to a minimal grayscale RGBA `ImageData` (R=G=B=Y, A=255) --
+ * neither zxing-wasm's `readBarcodes` nor jsQR accepts raw luminance
+ * through their public API, only RGBA-shaped input, so this is the
+ * cheapest way to still avoid `Camera.grabFrame`'s full canvas `drawImage`/
+ * `getImageData` round trip on the *capture* side (see
+ * `Camera.grabLumaFrame`'s doc comment) while still handing both decoders
+ * a shape they accept.
+ */
+function expandLumaToImageData(luma: LumaFrame): ImageData {
+  const { data, width, height } = luma;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0, j = 0; i < data.length; i++, j += 4) {
+    const y = data[i];
+    rgba[j] = y;
+    rgba[j + 1] = y;
+    rgba[j + 2] = y;
+    rgba[j + 3] = 255;
+  }
+  return new ImageData(rgba, width, height);
+}
 
 /**
  * Typed enough to compile under this project's DOM lib without pulling in
@@ -45,7 +78,9 @@ interface DecodeWorkerScope {
 const workerScope = globalThis as unknown as DecodeWorkerScope;
 
 workerScope.onmessage = (event) => {
-  const { id, imageData } = event.data;
+  const { id } = event.data;
+  const imageData =
+    'luma' in event.data ? expandLumaToImageData(event.data.luma) : event.data.imageData;
 
   decoder
     .decodeFrame(imageData)

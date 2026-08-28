@@ -1,23 +1,49 @@
 export type DecodeBackend = 'zxing' | 'jsqr';
 
-/** One request sent to the decode worker: sample a frame for a barcode. */
-export interface DecodeWorkerRequest {
-  id: number;
-  imageData: ImageData;
+/** A frame's luminance plane only, e.g. from `Camera.grabLumaFrame` — see `DecodeWorkerRequest`. */
+export interface LumaFrame {
+  data: Uint8Array;
+  width: number;
+  height: number;
 }
 
+/**
+ * One request sent to the decode worker: sample a frame for a barcode.
+ * Either a full RGBA frame (`Camera.grabFrame`'s canvas/RGBA path), or —
+ * preferred, when the native capture path is available — just its
+ * luminance plane (`Camera.grabLumaFrame`), which the worker expands to
+ * RGBA itself right before decoding (see `decode.worker.ts`'s
+ * `expandLumaToImageData`). Color carries no information for a QR decode,
+ * so shipping only the luma plane here (1 byte/pixel vs. RGBA's 4) is a
+ * straight bandwidth win over `postMessage`'s structured clone.
+ */
+export type DecodeWorkerRequest =
+  { id: number; imageData: ImageData } | { id: number; luma: LumaFrame };
+
 export type DecodeWorkerResponse =
-  | { id: number; type: 'result'; text: string; backend: DecodeBackend }
+  | { id: number; type: 'result'; text: string; bytes: Uint8Array | null; backend: DecodeBackend }
   | { id: number; type: 'no-result'; backend: DecodeBackend }
   | { id: number; type: 'error'; message: string };
 
-export interface FrameDecodeBackends {
-  decodeWithZxing: (imageData: ImageData) => Promise<string | null>;
-  decodeWithJsQr: (imageData: ImageData) => string | null;
+/**
+ * A decoded barcode's content in both forms a caller might want: `text`
+ * (used by `qrLtBackend`'s UR parts and the negotiation header frame) and
+ * `bytes` (used by `qrBinLtBackend`'s raw fountain parts — see
+ * `Scanner`'s `decodeBytes` option). Computing both costs nothing extra:
+ * zxing-wasm's `ReadResult` and jsQR's `QRCode` each already expose both
+ * from the same decode.
+ */
+export interface DecodedBarcode {
+  text: string | null;
+  bytes: Uint8Array | null;
 }
 
-export interface FrameDecodeResult {
-  text: string | null;
+export interface FrameDecodeBackends {
+  decodeWithZxing: (imageData: ImageData) => Promise<DecodedBarcode>;
+  decodeWithJsQr: (imageData: ImageData) => DecodedBarcode;
+}
+
+export interface FrameDecodeResult extends DecodedBarcode {
   backend: DecodeBackend;
 }
 
@@ -36,15 +62,15 @@ export function createFrameDecoder(backends: FrameDecodeBackends) {
   async function decodeFrame(imageData: ImageData): Promise<FrameDecodeResult> {
     if (zxingAvailable) {
       try {
-        const text = await backends.decodeWithZxing(imageData);
-        return { text, backend: 'zxing' };
+        const result = await backends.decodeWithZxing(imageData);
+        return { ...result, backend: 'zxing' };
       } catch (err) {
         zxingAvailable = false;
         console.warn('[screenferry] zxing-wasm failed, falling back to jsQR:', err);
       }
     }
 
-    return { text: backends.decodeWithJsQr(imageData), backend: 'jsqr' };
+    return { ...backends.decodeWithJsQr(imageData), backend: 'jsqr' };
   }
 
   return {
@@ -57,8 +83,8 @@ export function createFrameDecoder(backends: FrameDecodeBackends) {
 
 /** Maps a decode result to the worker response message for request `id`. */
 export function toDecodeResponse(id: number, result: FrameDecodeResult): DecodeWorkerResponse {
-  return result.text
-    ? { id, type: 'result', text: result.text, backend: result.backend }
+  return result.text !== null
+    ? { id, type: 'result', text: result.text, bytes: result.bytes, backend: result.backend }
     : { id, type: 'no-result', backend: result.backend };
 }
 
