@@ -466,9 +466,17 @@
         function pollResolution() {
           resolutionPoll = setInterval(() => {
             const res = session.resolution;
+            // Checking `res.width` alone is wrong for a portrait capture:
+            // Camera now requests `aspectRatio: 9/16` in portrait (Fix 2),
+            // so a perfectly good 1080p portrait stream reports width=1080,
+            // height=1920 — width < height there, not width < some fixed
+            // "landscape-shaped" floor. The *smaller* of the two dimensions
+            // is what actually caps how many pixels the roughly-square
+            // Cimbar code gets, regardless of orientation.
+            const shortSide = res ? Math.min(res.width, res.height) : 0;
             resolutionEl.textContent = res
               ? `camera capture resolution: ${res.width}x${res.height}` +
-                (res.width < 1280
+                (shortSide < 720
                   ? ' (low — Cimbar needs more pixels per cell than this; see tuning notes)'
                   : '')
               : 'camera capture resolution: negotiating...';
