@@ -511,10 +511,20 @@ export declare function resolvePreferredBackend(preferred: PreferredBackend, pro
  */
 export declare class Scanner {
     private camera;
-    private worker;
+    private pool;
     private timeoutHandle;
     private nextRequestId;
-    private pendingDecode;
+    /**
+     * Guards re-entrant *capture* only, not decode -- deliberately separate
+     * from the pool's own busy-tracking. Capture must stay serialized (one
+     * `grabLumaFrame`/`grabFrame` call at a time; see `Camera`), but a
+     * previous round's fix that folded capture and decode into a single
+     * "pendingDecode" flag ended up holding that slot for the sum of both,
+     * which meant the *next* capture couldn't even start until the current
+     * frame had finished decoding -- gone now that decode gating lives in
+     * `pool` instead, and needed as its own flag regardless of pool size.
+     */
+    private captureInFlight;
     private pendingRawFrame;
     private decodeBytes;
     private readonly callbacks;
@@ -525,6 +535,8 @@ export declare class Scanner {
         height: number;
     } | undefined;
     start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void>;
+    /** Creates one decode worker and wires its result handling — shared by every slot in `pool`, however large. */
+    private createDecodeWorker;
     /**
      * Schedules `tickFn` at roughly `1000 / scanHz` ms, via a self-rescheduling
      * `setTimeout` chain rather than a fixed-period `setInterval`. A few ms of
@@ -569,6 +581,33 @@ export declare interface ScannerOptions extends CameraOptions {
      * behavior, unchanged).
      */
     decodeBytes?: boolean;
+    /**
+     * Number of concurrent decode workers to spread captured frames across
+     * (ignored when `rawFrames` is true — that path never touches the
+     * decode-worker pool at all). Previously always 1: a 30fps camera fed a
+     * single serialized zxing-wasm decoder, so raising `scanHz` past that
+     * decoder's own throughput bought nothing — captured frames just piled
+     * up waiting on the one worker.
+     *
+     * Defaults to 1, which is exactly the original single-worker behavior —
+     * safe on any device, including one too slow to benefit from more.
+     * Raising it lets that many frames decode in parallel (frames are
+     * order-independent for a fountain-coded transfer, so out-of-order
+     * completion is harmless), which is close to a linear yield increase up
+     * to the sender's actual display rate.
+     *
+     * Not free: each worker instantiates its own zxing-wasm module (~1MB
+     * plus a startup delay), and on a low-end device several concurrent
+     * decodes can thrash the CPU rather than help. There's no safe universal
+     * default above 1 — the right number depends on the device — so this is
+     * opt-in and left to the caller (e.g. gate it on
+     * `navigator.hardwareConcurrency`, or expose it as a user-facing
+     * setting). `scanHz` should generally be raised alongside this: a single
+     * worker's decode latency was the de facto ceiling on how much of
+     * `scanHz` was actually usable, and that ceiling rises with worker
+     * count. Clamped to at least 1.
+     */
+    decodeWorkers?: number;
 }
 
 /**
