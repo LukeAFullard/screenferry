@@ -232,8 +232,8 @@
           <strong>fragmentSize</strong> — bytes packed into each QR frame. Bigger means fewer total
           frames needed, but a denser, harder-to-scan QR code — reliability drops if the receiver's
           camera can't resolve it clearly (resolution, distance, focus, motion blur all matter more
-          as this grows). Leave blank for the library's own tuned default (~580 bytes, chosen for
-          reliable scanning at ECC level L / QR version ≤ 20 — see <code>qr:capacity</code> in
+          as this grows). Leave blank for the library's own tuned default (~2127 bytes, chosen for
+          reliable scanning at ECC level L / QR version ≤ 40 — see <code>qr:capacity</code> in
           <code>package.json</code> if you want to compute a different ceiling).
         </li>
         <li>

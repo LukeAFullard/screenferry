@@ -502,7 +502,7 @@ try {
 //#endregion
 //#region src/codec/compression.ts
 function de(e) {
-	return ce(e);
+	return ce(e, { level: 9 });
 }
 function fe(e) {
 	return le(e);
@@ -9955,7 +9955,7 @@ ${h(e)}
 		return e && e.__esModule ? e : { default: e };
 	};
 	Object.defineProperty(e, "__esModule", { value: !0 }), e.URDecoder = e.UREncoder = e.UR = void 0, e.UR = t(Mn()).default, e.UREncoder = t(vr()).default, e.URDecoder = t(br()).default;
-})))(), Sr = 580;
+})))(), Sr = 2127;
 async function* Cr(e, t) {
 	let n = xr.UR.fromBuffer(Buffer.from(e)), r = new xr.UREncoder(n, t?.maxFragmentLength ?? Sr);
 	for (;;) yield r.nextPart();
@@ -10691,7 +10691,7 @@ function fi(e) {
 function pi(e, t) {
 	let n = ui(fi(e), {
 		ecc: t?.eccLevel ?? "L",
-		maxVersion: t?.maxVersion ?? 20,
+		maxVersion: t?.maxVersion ?? 40,
 		border: 0
 	});
 	return {
@@ -10798,7 +10798,7 @@ var xi = 1920, Si = 1080, Ci = class e {
 			width: { ideal: e?.width ?? xi },
 			height: { ideal: e?.height ?? Si },
 			aspectRatio: matchMedia("all and (orientation: landscape)").matches ? 16 / 9 : 9 / 16,
-			frameRate: { ideal: 15 }
+			frameRate: { ideal: 30 }
 		};
 		return Object.assign(t, {
 			exposureMode: "continuous",

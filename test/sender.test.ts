@@ -48,7 +48,7 @@ describe('encodeToFrames', () => {
 
     // A larger fragment length keeps the fountain mixing algorithm's cost
     // (and this test's runtime) reasonable for a multi-MB payload; the
-    // 580-byte default is QR-sized and exercised by the smaller tests.
+    // library's own QR-sized default is exercised by the smaller tests.
     const decoder = await decodeAllFrames(encodeToFrames(file, { fragmentSize: 5000 }), 5_000);
     expect(decoder.isComplete()).toBe(true);
 

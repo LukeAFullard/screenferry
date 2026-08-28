@@ -103,6 +103,19 @@ ahead of the 1.0.0 publish since that hasn't happened yet — see below.
 
 ### Changed
 
+- Raised `qrLtBackend`'s default QR version ceiling from 20 to 40 (the
+  highest version ISO/IEC 18004 defines), and recomputed
+  `DEFAULT_MAX_FRAGMENT_LENGTH` (`src/backends/qr-lt/fountain.ts`) to match
+  via `npm run qr:capacity` (580 → 2127 bytes at ECC L). Also raised gzip
+  pre-compression to `level: 9` (`src/codec/compression.ts`, a one-time
+  cost paid before the transfer starts) and the camera's requested capture
+  `frameRate` from 15 to 30 (`src/scan/camera.ts`), so a sender pushing
+  `DisplayDriverOptions.fps` above ~13 isn't immediately capped by an
+  under-provisioned camera constraint. Plain Luby Transform fountain
+  coding, single QR per frame, and standard ISO/IEC 18004 QR remain
+  unchanged — no RaptorQ, no multi-QR tiling. `DEFAULT_FPS` (10) and
+  `DEFAULT_SCAN_HZ` (20) are unchanged; real-camera scan reliability at QR
+  version 40 has not yet been validated on physical hardware.
 - Introduced a `TransferBackend` interface (`src/backends/types.ts`)
   behind which every transfer backend sits, so `encodeToFrames` and
   `StreamDecoder` are no longer hardwired to QR + Luby Transform fountain

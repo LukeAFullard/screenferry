@@ -24,7 +24,7 @@ camera-scannable QR codes, with empirically validated capacity/ECC settings.
    wasted — maximizing payload-per-frame matters more here.
 
 4. **Capacity discovery script.** For ECC `L`, find the largest fragment
-   length (bytes) that still fits QR version ≤ 20 (higher versions get too
+   length (bytes) that still fits QR version ≤ 40 (higher versions get too
    dense to read reliably at typical laptop-screen-to-phone-camera range).
    Feed this number back into Stage 2's `maxFragmentLength` default.
 
