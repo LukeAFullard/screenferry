@@ -245,6 +245,30 @@ function logGlRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): void
  * against this exact WASM build, and rejecting on an unverified number
  * risks false negatives); a transfer past that size may simply fail.
  */
+
+/**
+ * Logs (throttled to once per `name` per encode call — real usage is one
+ * long-running rateless loop, and a persistently negative code would
+ * otherwise spam the console once per frame) when a libcimbar C ABI call
+ * returns a negative code. Deliberately doesn't throw: this project's own
+ * reverse-engineered notes on which negative codes mean what (see
+ * `module.ts`'s doc comments) aren't exhaustively confirmed against this
+ * vendored WASM build — e.g. the finalizing zero-length `_cimbare_encode`
+ * call has been observed returning `-1` in working sessions, which isn't
+ * one of the failure codes documented for that call — so treating every
+ * negative return as fatal risks aborting an otherwise-working transfer
+ * on a code that doesn't actually indicate failure.
+ */
+const lastWarnedAt = new Map<string, number>();
+
+function warnIfNegative(name: string, result: number): void {
+  if (result >= 0) return;
+  const now = Date.now();
+  const last = lastWarnedAt.get(name) ?? 0;
+  if (now - last < 5000) return;
+  lastWarnedAt.set(name, now);
+  console.warn(`[screenferry] cimbar encoder: ${name} returned ${result}`);
+}
 export const cimbarBackend: TransferBackend<ImageFrame> = {
   id: 'cimbar',
 
@@ -269,9 +293,7 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
     try {
       module.HEAPU8.set(filenameBytes, filenamePtr);
       const initResult = module._cimbare_init_encode(filenamePtr, filenameBytes.length, -1);
-      if (initResult < 0) {
-        throw new Error(`screenferry cimbarBackend: _cimbare_init_encode failed (${initResult})`);
-      }
+      warnIfNegative('_cimbare_init_encode', initResult);
     } finally {
       module._free(filenamePtr);
     }
@@ -284,18 +306,12 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
       const view = chunkBuffer.ensure(Math.max(chunk.length, 1));
       view.set(chunk);
       const encodeResult = module._cimbare_encode(chunkBuffer.byteOffset, chunk.length);
-      if (encodeResult < 0) {
-        throw new Error(`screenferry cimbarBackend: _cimbare_encode failed (${encodeResult})`);
-      }
+      warnIfNegative('_cimbare_encode', encodeResult);
     }
     // A trailing zero-length call flushes/finalizes — mirrors the reference
     // `importFile`'s final `encode_bytes(nullBuff)` once the file is read.
     const finalizeResult = module._cimbare_encode(chunkBuffer.byteOffset, 0);
-    if (finalizeResult < 0) {
-      throw new Error(
-        `screenferry cimbarBackend: _cimbare_encode (finalize) failed (${finalizeResult})`,
-      );
-    }
+    warnIfNegative('_cimbare_encode (finalize)', finalizeResult);
 
     // Rateless, like the LT backend: keeps rendering fresh frames forever.
     // The caller (`DisplayDriver`, a test harness, ...) decides when it has
@@ -308,20 +324,9 @@ export const cimbarBackend: TransferBackend<ImageFrame> = {
     // frame (an empty/garbage framebuffer) before the real data starts.
     for (;;) {
       const frameNum = module._cimbare_next_frame(0);
-      if (frameNum < 0) {
-        throw new Error(`screenferry cimbarBackend: _cimbare_next_frame failed (${frameNum})`);
-      }
+      warnIfNegative('_cimbare_next_frame', frameNum);
       const renderResult = module._cimbare_render();
-      if (renderResult < 0) {
-        throw new Error(`screenferry cimbarBackend: _cimbare_render failed (${renderResult})`);
-      }
-      if (renderResult === 0) {
-        // No window/no encoder stream to draw — shouldn't happen right
-        // after a successful `next_frame()`, but isn't fatal: the canvas
-        // still holds the previously rendered frame, so warn and keep
-        // going rather than tearing down an otherwise-working session.
-        console.warn('[screenferry] cimbar encoder: _cimbare_render had nothing to draw');
-      }
+      warnIfNegative('_cimbare_render', renderResult);
       yield readCanvasPixels(canvas, gl);
     }
   },

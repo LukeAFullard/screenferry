@@ -11033,7 +11033,13 @@ function Vi(e) {
 	let t = e.getExtension("WEBGL_debug_renderer_info");
 	t && console.info("[screenferry] cimbar GPU renderer:", e.getParameter(t.UNMASKED_RENDERER_WEBGL));
 }
-var Hi = {
+var Hi = /* @__PURE__ */ new Map();
+function Ui(e, t) {
+	if (t >= 0) return;
+	let n = Date.now();
+	n - (Hi.get(e) ?? 0) < 5e3 || (Hi.set(e, n), console.warn(`[screenferry] cimbar encoder: ${e} returned ${t}`));
+}
+var Wi = {
 	id: "cimbar",
 	compressesInternally: !0,
 	async *encode(e, t) {
@@ -11041,33 +11047,21 @@ var Hi = {
 		i._cimbare_configure(r, t?.compressionLevel ?? -1);
 		let s = new TextEncoder().encode("data.bin"), c = i._malloc(s.length);
 		try {
-			i.HEAPU8.set(s, c);
-			let e = i._cimbare_init_encode(c, s.length, -1);
-			if (e < 0) throw Error(`screenferry cimbarBackend: _cimbare_init_encode failed (${e})`);
+			i.HEAPU8.set(s, c), Ui("_cimbare_init_encode", i._cimbare_init_encode(c, s.length, -1));
 		} finally {
 			i._free(c);
 		}
 		let l = i._cimbare_encode_bufsize(), u = new Fi(i);
 		for (let t = 0; t < e.length; t += l) {
 			let n = e.subarray(t, t + l);
-			u.ensure(Math.max(n.length, 1)).set(n);
-			let r = i._cimbare_encode(u.byteOffset, n.length);
-			if (r < 0) throw Error(`screenferry cimbarBackend: _cimbare_encode failed (${r})`);
+			u.ensure(Math.max(n.length, 1)).set(n), Ui("_cimbare_encode", i._cimbare_encode(u.byteOffset, n.length));
 		}
-		let d = i._cimbare_encode(u.byteOffset, 0);
-		if (d < 0) throw Error(`screenferry cimbarBackend: _cimbare_encode (finalize) failed (${d})`);
-		for (;;) {
-			let e = i._cimbare_next_frame(0);
-			if (e < 0) throw Error(`screenferry cimbarBackend: _cimbare_next_frame failed (${e})`);
-			let t = i._cimbare_render();
-			if (t < 0) throw Error(`screenferry cimbarBackend: _cimbare_render failed (${t})`);
-			t === 0 && console.warn("[screenferry] cimbar encoder: _cimbare_render had nothing to draw"), yield Li(a, o);
-		}
+		for (Ui("_cimbare_encode (finalize)", i._cimbare_encode(u.byteOffset, 0));;) Ui("_cimbare_next_frame", i._cimbare_next_frame(0)), Ui("_cimbare_render", i._cimbare_render()), yield Li(a, o);
 	},
 	createDecoder() {
-		return new Ui();
+		return new Gi();
 	}
-}, Ui = class e {
+}, Gi = class e {
 	constructor() {
 		this.pending = [], this.loading = !1, this.modeAttempt = 0, this.extractStats = /* @__PURE__ */ new Map(), this.statsWindowStart = 0, this.lastProgress = 0;
 	}
@@ -11170,36 +11164,36 @@ var Hi = {
 		let r = [...this.extractStats.entries()].sort(([e], [t]) => e - t).map(([e, t]) => `${e === Infinity ? ">0" : e}=${t}`).join(", ");
 		console.debug(`[screenferry] cimbar extractedLen outcomes (last ~1s): ${r}`), this.extractStats.clear(), this.statsWindowStart = n;
 	}
-}, Wi = {
+}, Ki = {
 	"qr-lt": _i,
-	cimbar: Hi
-}, Gi = "sf1:backend=";
-function Ki(e) {
-	return `${Gi}${e}`;
+	cimbar: Wi
+}, qi = "sf1:backend=";
+function Ji(e) {
+	return `${qi}${e}`;
 }
-function qi(e) {
+function Yi(e) {
 	if (typeof e != "string") return;
 	let t = e.toLowerCase();
-	if (t.startsWith(Gi)) return t.slice(12);
+	if (t.startsWith(qi)) return t.slice(12);
 }
-function Ji(e) {
-	return Object.prototype.hasOwnProperty.call(Wi, e) ? Wi[e] : void 0;
+function Xi(e) {
+	return Object.prototype.hasOwnProperty.call(Ki, e) ? Ki[e] : void 0;
 }
-async function Yi() {
+async function Zi() {
 	try {
 		return await ki(), !0;
 	} catch {
 		return !1;
 	}
 }
-async function Xi(e, t = Yi) {
-	return e === "qr-lt" ? _i : e === "cimbar" || await t() ? Hi : _i;
+async function Qi(e, t = Zi) {
+	return e === "qr-lt" ? _i : e === "cimbar" || await t() ? Wi : _i;
 }
 //#endregion
 //#region src/backends/display-driver.ts
-var Zi = 10, Qi = class {
+var $i = 10, ea = class {
 	constructor(e, t, n) {
-		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? Zi, this.onFrameSent = n?.onFrameSent;
+		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? $i, this.onFrameSent = n?.onFrameSent;
 	}
 	start() {
 		this.running || (this.running = !0, this.iterator = this.source[Symbol.asyncIterator](), this.lastFrameTime = 0, this.visibilityListener = () => {
@@ -11235,12 +11229,12 @@ var Zi = 10, Qi = class {
 		let n = e.data, r = new Uint8ClampedArray(n.buffer, n.byteOffset, n.length);
 		t.putImageData(new ImageData(r, e.width, e.height), 0, 0);
 	}
-}, $i = 10;
-function ea(e) {
+}, ta = 10;
+function na(e) {
 	return "preferredBackend" in e;
 }
-async function* ta(e, t, n) {
-	let r = e[Symbol.asyncIterator](), i = Ki(t), a = 0;
+async function* ra(e, t, n) {
+	let r = e[Symbol.asyncIterator](), i = Ji(t), a = 0;
 	for (;;) {
 		a % n === 0 && (yield i);
 		let { value: e, done: t } = await r.next();
@@ -11248,18 +11242,18 @@ async function* ta(e, t, n) {
 		yield e, a++;
 	}
 }
-async function* na(e, t) {
+async function* ia(e, t) {
 	let n = new Uint8Array(await e.arrayBuffer()), r = "name" in e && typeof e.name == "string" ? e.name : "file", i = e.type || "application/octet-stream";
-	if (t && ea(t)) {
-		let e = await Xi(t.preferredBackend), a = await yi(n, {
+	if (t && na(t)) {
+		let e = await Qi(t.preferredBackend), a = await yi(n, {
 			filename: r,
 			mimeType: i
 		}, {
 			maxFragmentLength: t.fragmentSize,
 			backend: e,
 			backendOptions: t.backendOptions
-		}), o = Math.max(1, t.headerIntervalFrames ?? $i);
-		yield* ta(a, e.id, o);
+		}), o = Math.max(1, t.headerIntervalFrames ?? ta);
+		yield* ra(a, e.id, o);
 		return;
 	}
 	yield* await yi(n, {
@@ -11271,7 +11265,7 @@ async function* na(e, t) {
 		backendOptions: t?.backendOptions
 	});
 }
-var ra = class {
+var aa = class {
 	constructor(e) {
 		this.decoder = new bi(e);
 	}
@@ -11288,9 +11282,9 @@ var ra = class {
 		let { filename: e, mimeType: t, bytes: n } = await this.decoder.getResult();
 		return new File([n], e, { type: t });
 	}
-}, ia = class {
+}, oa = class {
 	constructor(e = {}, t) {
-		this.scanner = new Di(), this.settled = !1, this.callbacks = e, this.decoder = new ra(t);
+		this.scanner = new Di(), this.settled = !1, this.callbacks = e, this.decoder = new aa(t);
 	}
 	async start(e, t) {
 		this.settled = !1, this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, t);
@@ -11315,7 +11309,7 @@ var ra = class {
 			}));
 		}
 	}
-}, aa = class {
+}, sa = class {
 	constructor(e = {}) {
 		this.callbacks = e;
 	}
@@ -11329,7 +11323,7 @@ var ra = class {
 		return this.decoder?.isComplete ?? !1;
 	}
 	addFrame(e) {
-		let t = qi(e);
+		let t = Yi(e);
 		if (t !== void 0) {
 			this.resolvedBackendId || this.resolve(t);
 			return;
@@ -11345,12 +11339,12 @@ var ra = class {
 		return this.decoder.getResult();
 	}
 	resolve(e) {
-		let t = Ji(e);
-		t && (this.resolvedBackendId = e, this.decoder = new ra(t), this.callbacks.onBackendResolved?.(e));
+		let t = Xi(e);
+		t && (this.resolvedBackendId = e, this.decoder = new aa(t), this.callbacks.onBackendResolved?.(e));
 	}
-}, oa = class {
+}, ca = class {
 	constructor(e = {}) {
-		this.scanner = new Di(), this.settled = !1, this.callbacks = e, this.decoder = new aa({ onBackendResolved: (e) => {
+		this.scanner = new Di(), this.settled = !1, this.callbacks = e, this.decoder = new sa({ onBackendResolved: (e) => {
 			this.callbacks.onBackendResolved?.(e), e !== _i.id && this.switchToRawFrames();
 		} });
 	}
@@ -11393,6 +11387,6 @@ var ra = class {
 	}
 };
 //#endregion
-export { wi as Camera, Qi as DisplayDriver, ge as IntegrityError, oa as NegotiatingReceiverSession, aa as NegotiatingStreamDecoder, ia as ReceiverSession, Di as Scanner, ra as StreamDecoder, Hi as cimbarBackend, na as encodeToFrames, Yi as probeCimbarAvailable, _i as qrLtBackend, Xi as resolvePreferredBackend };
+export { wi as Camera, ea as DisplayDriver, ge as IntegrityError, ca as NegotiatingReceiverSession, sa as NegotiatingStreamDecoder, oa as ReceiverSession, Di as Scanner, aa as StreamDecoder, Wi as cimbarBackend, ia as encodeToFrames, Zi as probeCimbarAvailable, _i as qrLtBackend, Qi as resolvePreferredBackend };
 
 //# sourceMappingURL=index.js.map

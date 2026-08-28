@@ -42,7 +42,14 @@ export interface CimbarModule {
    */
   _cimbare_init_encode(filenamePtr: number, filenameLen: number, encodeId: number): number;
   _cimbare_encode_bufsize(): number;
-  /** Returns a negative code on failure (`-2` write failure, `-3` fountain-encoder-stream creation failure) — not documented as `void`, check it. */
+  /**
+   * Not `void` — worth logging, not trusting blindly. Documented negative
+   * failure codes are `-2` (write failure) and `-3` (fountain-encoder-
+   * stream creation failure), but the finalizing zero-length call (`len ===
+   * 0`, used to flush) has been observed returning `-1` — not one of those
+   * two — in sessions that otherwise worked, so `-1` specifically from this
+   * call isn't confirmed to mean failure.
+   */
   _cimbare_encode(bytesPtr: number, bytesLen: number): number;
   /** Returns `-1` with no window/encoder stream, `0` if there's nothing to draw, `1` on a successful draw — not `void`, check it. */
   _cimbare_render(): number;
