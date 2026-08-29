@@ -10938,7 +10938,7 @@ var Oi = class {
 	createDecodeWorker() {
 		let e = new Worker(new URL(
 			/* @vite-ignore */
-			"" + new URL("assets/decode.worker-85O83bfc.js", import.meta.url).href,
+			"" + new URL("assets/decode.worker-Kz3EDOsC.js", import.meta.url).href,
 			"" + import.meta.url
 		), { type: "module" });
 		return e.onmessage = (t) => {

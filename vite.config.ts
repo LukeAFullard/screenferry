@@ -29,11 +29,6 @@ export default defineConfig({
       external: [/^zxing-wasm(\/.*)?$/],
     },
   },
-  worker: {
-    rollupOptions: {
-      external: [/^zxing-wasm(\/.*)?$/],
-    },
-  },
   plugins: [
     dts({
       entryRoot: 'src',
