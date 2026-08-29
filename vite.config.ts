@@ -25,6 +25,9 @@ export default defineConfig({
       formats: ['es', 'cjs'],
     },
     sourcemap: true,
+    rollupOptions: {
+      external: [/^zxing-wasm(\/.*)?$/],
+    },
   },
   plugins: [
     dts({

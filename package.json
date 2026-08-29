@@ -35,6 +35,10 @@
     "camera",
     "luby-transform"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "build": "vite build",
     "postbuild": "node scripts/verify-dist.mjs",
