@@ -35,7 +35,11 @@
     "camera",
     "luby-transform"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./src/env/polyfills.ts",
+    "./dist/index.js",
+    "./dist/index.cjs"
+  ],
   "engines": {
     "node": ">=18.0.0"
   },

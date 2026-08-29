@@ -12,8 +12,22 @@
 // browser.
 import assert from 'node:assert/strict';
 
+// Simulate a browser environment (where process and Buffer are not globally present)
+// before loading dist/index.js to verify that importing the bundle installs polyfills.
+delete globalThis.process;
+delete globalThis.Buffer;
+
 const { qrLtBackend, qrBinLtBackend, encodeToFrames, StreamDecoder } =
   await import('../dist/index.js');
+
+assert.ok(
+  typeof globalThis.process !== 'undefined',
+  'verify-dist: globalThis.process should be polyfilled by dist/index.js',
+);
+assert.ok(
+  typeof globalThis.Buffer !== 'undefined',
+  'verify-dist: globalThis.Buffer should be polyfilled by dist/index.js',
+);
 
 async function roundTrip(backend, label) {
   const bytes = new TextEncoder().encode(`verify-dist ${label} round trip payload`.repeat(50));
