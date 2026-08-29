@@ -20,22 +20,24 @@ export interface EncodeOptions<F extends Frame = string> {
   /** Which transfer backend to use. Defaults to `qrLtBackend` (QR + Luby Transform fountain codes). */
   backend?: TransferBackend<F>;
   /**
-   * Backend-specific encode options (e.g. `CimbarEncodeOptions`), passed
-   * through as-is to `backend.encode()` instead of `{ maxFragmentLength:
-   * fragmentSize }`. Only meaningful together with `backend`/`preferredBackend`
-   * — `qrLtBackend` only understands `maxFragmentLength`.
+   * Backend-specific encode options, passed through as-is to
+   * `backend.encode()` instead of `{ maxFragmentLength: fragmentSize }`.
+   * Only meaningful for a custom `backend` — both backends shipped here
+   * only understand `maxFragmentLength`.
    */
   backendOptions?: unknown;
 }
 
 /**
- * `encodeToFrames`'s negotiated mode (Stage 11): instead of pinning a
- * backend the receiver must already know, `preferredBackend` picks one —
- * `"auto"` tries `cimbarBackend` if it's usable here, falling back to
- * `qrLtBackend` otherwise — and the stream carries a plain-QR header/beacon
- * frame announcing that choice, so `NegotiatingStreamDecoder`/
- * `NegotiatingReceiverSession` on the receiving end never need to be told
- * which backend is in use. See the README's "Backend negotiation" section.
+ * `encodeToFrames`'s negotiated mode: instead of pinning a backend the
+ * receiver must already know, `preferredBackend` names one — and the stream
+ * carries a plain-QR header/beacon frame announcing that choice, so
+ * `NegotiatingStreamDecoder`/`NegotiatingReceiverSession` on the receiving
+ * end never need to be told which backend is in use. This is what makes it
+ * safe to offer `qr-bin-lt` to a receiver whose library version you don't
+ * control: it either recognizes the announcement or keeps waiting, rather
+ * than silently misreading the data frames. See the README's "Backend
+ * negotiation" section.
  */
 export interface NegotiatedEncodeOptions {
   /** Fragment size (payload bytes per frame), passed through to the resolved backend. Ignored if `backendOptions` is set. */
@@ -49,7 +51,7 @@ export interface NegotiatedEncodeOptions {
    * this value. Default 10.
    */
   headerIntervalFrames?: number;
-  /** Backend-specific encode options (e.g. `CimbarEncodeOptions`) for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
+  /** Backend-specific encode options for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
   backendOptions?: unknown;
 }
 
@@ -82,15 +84,15 @@ async function* interleaveHeaderFrames(
 
 /**
  * Envelopes and encodes `file` via the chosen backend, yielding raw frames —
- * UR part strings for the default `qrLtBackend`, rendered pixel data
- * (`ImageFrame`) for `cimbarBackend` — not rendered-to-screen output. This
- * layer is UI-agnostic; rendering the returned frames is the caller's
- * choice (see `DisplayDriver` for a canvas-based one). The stream is
- * infinite (both backends are rateless): the caller decides when it has
- * sent enough and stops pulling.
+ * UR part strings for the default `qrLtBackend`, raw `Uint8Array` fountain
+ * parts for `qrBinLtBackend` — not rendered-to-screen output. This layer is
+ * UI-agnostic; rendering the returned frames is the caller's choice (see
+ * `DisplayDriver` for a canvas-based one). The stream is infinite (both
+ * backends are rateless): the caller decides when it has sent enough and
+ * stops pulling.
  *
  * Passing `preferredBackend` instead of `backend` switches to negotiated
- * mode (Stage 11) — see `NegotiatedEncodeOptions`.
+ * mode — see `NegotiatedEncodeOptions`.
  */
 export function encodeToFrames(file: Blob, opts: NegotiatedEncodeOptions): AsyncIterable<Frame>;
 export function encodeToFrames<F extends Frame = string>(
@@ -134,10 +136,8 @@ export type { DisplayDriverOptions } from './backends/display-driver';
 
 export { qrLtBackend } from './backends/qr-lt';
 export { qrBinLtBackend } from './backends/qr-bin-lt';
-export { cimbarBackend } from './backends/cimbar';
-export type { CimbarEncodeOptions } from './backends/cimbar';
-export type { Frame, ImageFrame, TransferBackend } from './backends/types';
-export { probeCimbarAvailable, resolvePreferredBackend } from './backends/negotiation';
+export type { Frame, TransferBackend } from './backends/types';
+export { resolvePreferredBackend } from './backends/negotiation';
 export type { PreferredBackend } from './backends/negotiation';
 
 export { Scanner, Camera } from './scan/index';
@@ -201,9 +201,9 @@ export interface ReceiverSessionCallbacks {
  * screen-share receiver) — this class is the camera-specific shortcut.
  *
  * Defaults to the QR text-decode path (`qrLtBackend`). To receive a
- * `cimbarBackend` transfer instead, pass `backend: cimbarBackend` here
- * *and* `rawFrames: true` in `start()`'s `ScannerOptions` — the two must
- * agree (nothing checks that for you); see `Scanner.rawFrames`.
+ * `qrBinLtBackend` transfer instead, pass `backend: qrBinLtBackend` here
+ * *and* `decodeBytes: true` in `start()`'s `ScannerOptions` — the two must
+ * agree (nothing checks that for you); see `ScannerOptions.decodeBytes`.
  */
 export class ReceiverSession<F extends Frame = string> {
   private readonly scanner = new Scanner();
@@ -277,8 +277,8 @@ export interface NegotiatingStreamDecoderCallbacks {
 }
 
 /**
- * Receive-side counterpart to `encodeToFrames`'s `preferredBackend` mode
- * (Stage 11): consumes a heterogeneous `Frame` stream — the sender's
+ * Receive-side counterpart to `encodeToFrames`'s `preferredBackend` mode:
+ * consumes a heterogeneous `Frame` stream — the sender's
  * plain-QR header/beacon frames interleaved with its chosen backend's data
  * frames — auto-detects which backend is in use, and delegates to an
  * internal `StreamDecoder` for it. The caller never needs to know which
@@ -317,9 +317,9 @@ export class NegotiatingStreamDecoder {
     if (!this.resolvedBackendId) {
       // The header frame itself can be lost like any other frame. A
       // qrLtBackend data frame (a bc-ur UR part) is indistinguishable from
-      // "haven't seen the header yet" except by trying it — anything else
-      // (an ImageFrame) can't be qrLtBackend data, so there's nothing
-      // useful to do with it until a header arrives.
+      // "haven't seen the header yet" except by trying it — a `Uint8Array`
+      // frame can't be qrLtBackend data, so there's nothing useful to do
+      // with it until a header arrives.
       if (typeof frame !== 'string') return;
       this.resolve(qrLtBackend.id);
     }
@@ -352,20 +352,18 @@ export interface NegotiatingReceiverSessionCallbacks extends ReceiverSessionCall
 }
 
 /**
- * Camera-facing counterpart to `encodeToFrames`'s `preferredBackend` mode
- * (Stage 11) — the negotiated equivalent of `ReceiverSession`. Always
- * starts `Scanner` in its default QR text-decode mode (where the header
- * frame always lives); on detecting a non-`qr-lt` backend, restarts
- * `Scanner` in whichever capture mode that backend needs
- * (`scannerOptionsForBackend` — `rawFrames` for an image-based backend like
- * Cimbar, `decodeBytes` for a byte-mode QR backend like `qrBinLtBackend`)
- * and continues the transfer with the right decoder. The caller never
- * chooses a backend up front.
+ * Camera-facing counterpart to `encodeToFrames`'s `preferredBackend` mode —
+ * the negotiated equivalent of `ReceiverSession`. Always starts `Scanner`
+ * in its default QR text-decode mode (where the header frame always
+ * lives); on detecting a non-`qr-lt` backend, restarts `Scanner` in
+ * whichever decode mode that backend needs (`scannerOptionsForBackend` —
+ * `decodeBytes` for a byte-mode QR backend like `qrBinLtBackend`) and
+ * continues the transfer with the right decoder. The caller never chooses a
+ * backend up front.
  *
  * The restart briefly stops and re-acquires the camera — unavoidable given
- * `Scanner`'s current design (see the README's Cimbar section on
- * `rawFrames`) — and, like `cimbarBackend` itself, this path has not been
- * exercised against a real camera in this project's test harness.
+ * `Scanner`'s current design, since the decode mode is fixed at
+ * `Scanner.start()`.
  */
 export class NegotiatingReceiverSession {
   private readonly scanner = new Scanner();
@@ -393,7 +391,7 @@ export class NegotiatingReceiverSession {
     this.videoElement = videoElement;
     this.scannerOpts = opts;
     this.unsubscribe = this.scanner.onDecode((frame) => this.handleFrame(frame));
-    await this.scanner.start(videoElement, { ...opts, rawFrames: false, decodeBytes: false });
+    await this.scanner.start(videoElement, { ...opts, decodeBytes: false });
   }
 
   stop(): void {

@@ -7,13 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Prepped for a 1.0.0 release — not yet tagged or published. See
-[`PROJECT_PLAN.md`](PROJECT_PLAN.md) Stage 8 for the remaining release
-steps (publish, git tag, manual device-matrix attestation).
+Prepped for a **2.0.0** release — not yet tagged or published. The major
+version reflects the removed public exports below: this project's stated
+policy is strict semver on the root export's surface, and that policy is
+applied here regardless of the fact that no version has actually been
+published to npm yet. See [`PROJECT_PLAN.md`](PROJECT_PLAN.md) Stage 8 for
+the remaining release steps (publish, git tag, manual device-matrix
+attestation).
 
-Also includes Stage 9's codec abstraction refactor, Stage 10's Cimbar
-backend integration, and Stage 11's backend negotiation (all v2), landed
-ahead of the 1.0.0 publish since that hasn't happened yet — see below.
+Also includes Stage 9's codec abstraction refactor, Stage 11's backend
+negotiation, and Stage 13's Cimbar removal — see below. Stage 10's Cimbar
+backend was built, shipped into this same unreleased line, and then removed
+again; it never reached a published version.
+
+### Removed
+
+- **The Cimbar backend, entirely** — `cimbarBackend`, `CimbarEncodeOptions`,
+  `probeCimbarAvailable`, `"cimbar"` as a `PreferredBackend` value, the
+  vendored ~2MB MPL-2.0 libcimbar WASM build, and its entry in
+  `THIRD_PARTY_LICENSES.md`. **Reason: real-device testing.** On Android the
+  sender displayed correctly but the receiver never began decoding at all;
+  on iPhone it worked but was slower than the QR backends it was supposed
+  to beat. `qr-lt` was reliable on both platforms and `qr-bin-lt` reliable
+  on both (slower on Android), so the two supported backends are now those,
+  and nothing is lost that worked. The backend abstraction and the
+  header-frame negotiation it originally motivated both stay — see
+  `PROJECT_PLAN.md`'s "Cimbar removal" section for the full rationale.
+- `ImageFrame`, and the image-frame arm of the `Frame` union — `Frame` is
+  now `string | Uint8Array`. Nothing produces an image frame any more.
+  **Breaking for a third-party image-based `TransferBackend`**, which is
+  the only thing that could have relied on it.
+- `Scanner`'s `rawFrames` capture mode (`ScannerOptions.rawFrames`) and
+  `Camera.grabNativeFrame()`, both of which existed solely to feed raw
+  pixels to Cimbar's decoder. `Camera.grabLumaFrame()` — the QR path's
+  native luminance capture, and the one real-camera fast path — is
+  unaffected, as is `grabFrame()`'s canvas/RGBA fallback.
+  `ScannerOptions.decodeBytes` is a separate, unrelated flag and stays.
+- `resolvePreferredBackend`'s second `probe` argument. There is no
+  capability left to probe for.
+
+### Changed
+
+- `"auto"` (`PreferredBackend`) now resolves straight to `qrLtBackend` and
+  is **deprecated**. It previously tried Cimbar and fell back; both
+  remaining backends run anywhere this library runs, so there is no device
+  capability left to detect, and resolving to `qrBinLtBackend`
+  automatically would risk a receiver too old to recognize its header id.
+  Name `"qr-lt"` or `"qr-bin-lt"` explicitly instead. The value stays in
+  the union so existing callers keep compiling.
+- `NegotiatingReceiverSession` now only ever switches `Scanner` between
+  text and byte decoding (never into a raw-pixel capture mode), so the
+  mid-transfer camera restart is the only remaining handoff on that path.
 
 ### Fixed
 

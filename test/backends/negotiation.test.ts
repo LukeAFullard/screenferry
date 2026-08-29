@@ -5,7 +5,6 @@ import {
   NegotiatingStreamDecoder,
   qrLtBackend,
   qrBinLtBackend,
-  cimbarBackend,
   resolvePreferredBackend,
 } from '../../src/index';
 import {
@@ -30,7 +29,7 @@ async function blobBytes(blob: Blob): Promise<Uint8Array> {
 
 describe('header/beacon frame', () => {
   it('round-trips through an actual QR render+scan cycle, for every backend id', () => {
-    for (const backend of [qrLtBackend, qrBinLtBackend, cimbarBackend]) {
+    for (const backend of [qrLtBackend, qrBinLtBackend]) {
       const header = encodeHeaderFrame(backend.id);
       const scanned = decodeAsPlainQr(header);
       // Not necessarily case-identical to `header` — the QR layer
@@ -47,10 +46,6 @@ describe('header/beacon frame', () => {
     expect(decodeHeaderFrame('ur:bytes/1-1/lpadaobncpft')).toBeUndefined();
   });
 
-  it('is undefined for an ImageFrame', () => {
-    expect(decodeHeaderFrame({ data: new Uint8Array(1), width: 1, height: 1 })).toBeUndefined();
-  });
-
   it('is also recognized from a Uint8Array frame (post-switch to byte-mode decoding)', () => {
     const header = encodeHeaderFrame('qr-bin-lt');
     const asBytes = new TextEncoder().encode(header);
@@ -63,8 +58,7 @@ describe('header/beacon frame', () => {
 });
 
 describe('scannerOptionsForBackend', () => {
-  it('maps cimbar to rawFrames, qr-bin-lt to decodeBytes, and qr-lt to neither', () => {
-    expect(scannerOptionsForBackend('cimbar')).toEqual({ rawFrames: true });
+  it('maps qr-bin-lt to decodeBytes, and qr-lt to nothing', () => {
     expect(scannerOptionsForBackend('qr-bin-lt')).toEqual({ decodeBytes: true });
     expect(scannerOptionsForBackend('qr-lt')).toEqual({});
     expect(scannerOptionsForBackend('unknown')).toEqual({});
@@ -72,36 +66,13 @@ describe('scannerOptionsForBackend', () => {
 });
 
 describe('resolvePreferredBackend', () => {
-  it('pins qr-lt/cimbar directly, without probing', async () => {
-    let probed = false;
-    const probe = async () => {
-      probed = true;
-      return true;
-    };
-
-    expect(await resolvePreferredBackend('qr-lt', probe)).toBe(qrLtBackend);
-    expect(await resolvePreferredBackend('qr-bin-lt', probe)).toBe(qrBinLtBackend);
-    expect(await resolvePreferredBackend('cimbar', probe)).toBe(cimbarBackend);
-    expect(probed).toBe(false);
+  it('resolves each backend id to its backend', async () => {
+    expect(await resolvePreferredBackend('qr-lt')).toBe(qrLtBackend);
+    expect(await resolvePreferredBackend('qr-bin-lt')).toBe(qrBinLtBackend);
   });
 
-  it('"auto" never resolves to qr-bin-lt, even when cimbar is unavailable (compatibility with older receivers)', async () => {
-    expect(await resolvePreferredBackend('auto', async () => false)).toBe(qrLtBackend);
-  });
-
-  it('"auto" resolves to cimbar when the capability probe succeeds', async () => {
-    expect(await resolvePreferredBackend('auto', async () => true)).toBe(cimbarBackend);
-  });
-
-  it('"auto" falls back to qr-lt when the capability probe fails', async () => {
-    expect(await resolvePreferredBackend('auto', async () => false)).toBe(qrLtBackend);
-  });
-
-  it('"auto" never throws even if the probe itself would (real probeCimbarAvailable behavior in this Node environment)', async () => {
-    // No injected probe: exercises the real `probeCimbarAvailable`, which
-    // in this headless environment (no `document`) genuinely can't load
-    // Cimbar's WASM module and must resolve `false`, not reject.
-    await expect(resolvePreferredBackend('auto')).resolves.toBe(qrLtBackend);
+  it('"auto" resolves to qr-lt — never qr-bin-lt (compatibility with older receivers)', async () => {
+    expect(await resolvePreferredBackend('auto')).toBe(qrLtBackend);
   });
 });
 
@@ -116,20 +87,19 @@ describe('encodeToFrames({ preferredBackend })', () => {
     expect(decodeHeaderFrame(first as string)).toBe('qr-lt');
   });
 
-  it("announces 'cimbar' as its first frame when explicitly preferred (without needing real Cimbar WASM)", async () => {
+  it("announces 'qr-bin-lt' as its first frame when explicitly preferred", async () => {
     const bytes = pseudoRandomBytes(64, 91);
-    const file = new File([bytes], 'cimbar-header.bin', { type: 'application/octet-stream' });
+    const file = new File([bytes], 'bin-header.bin', { type: 'application/octet-stream' });
 
-    // Stop after the header — cimbarBackend.encode()'s first real frame
-    // would require WASM/WebGL this headless test environment doesn't
-    // have; the header itself is produced before that's ever touched.
-    const iterator = encodeToFrames(file, { preferredBackend: 'cimbar' })[Symbol.asyncIterator]();
+    const iterator = encodeToFrames(file, { preferredBackend: 'qr-bin-lt' })[
+      Symbol.asyncIterator
+    ]();
     const first = (await iterator.next()).value;
 
-    expect(decodeHeaderFrame(first as string)).toBe('cimbar');
+    expect(decodeHeaderFrame(first as string)).toBe('qr-bin-lt');
   });
 
-  it('round-trips a full negotiated qr-bin-lt transfer end to end (no WASM needed)', async () => {
+  it('round-trips a full negotiated qr-bin-lt transfer end to end', async () => {
     const bytes = pseudoRandomBytes(10_000, 96);
     const file = new File([bytes], 'bin-negotiated.bin', { type: 'application/octet-stream' });
 
@@ -182,7 +152,7 @@ describe('encodeToFrames({ preferredBackend })', () => {
     expect(headerIndexes).toEqual([0, 4, 8]);
   });
 
-  it('"auto" degrades gracefully to qr-lt in this environment and still completes a full round trip', async () => {
+  it('"auto" resolves to qr-lt and still completes a full round trip', async () => {
     const bytes = pseudoRandomBytes(4096, 93);
     const file = new File([bytes], 'auto.bin', { type: 'application/octet-stream' });
 
@@ -239,12 +209,18 @@ describe('NegotiatingStreamDecoder', () => {
     expect(decoder.backendId).toBe('qr-lt');
   });
 
-  it("resolves cimbar from its header frame alone (detection doesn't require real WASM)", () => {
+  it('resolves qr-bin-lt from its header frame alone, before any data frame', () => {
     let resolved: string | undefined;
     const decoder = new NegotiatingStreamDecoder({ onBackendResolved: (id) => (resolved = id) });
+    decoder.addFrame(encodeHeaderFrame('qr-bin-lt'));
+    expect(resolved).toBe('qr-bin-lt');
+    expect(decoder.backendId).toBe('qr-bin-lt');
+  });
+
+  it('ignores the id of a backend this build no longer has (a sender on an older version)', () => {
+    const decoder = new NegotiatingStreamDecoder();
     decoder.addFrame(encodeHeaderFrame('cimbar'));
-    expect(resolved).toBe('cimbar');
-    expect(decoder.backendId).toBe('cimbar');
+    expect(decoder.backendId).toBeUndefined();
   });
 
   it('falls back to qr-lt if a qr-lt data frame arrives before any header (header frame lost)', async () => {

@@ -10856,17 +10856,6 @@ var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
 		let { videoWidth: e, videoHeight: t } = this.video;
 		if (e !== 0 && t !== 0) return this.canvas.width = e, this.canvas.height = t, this.ctx.drawImage(this.video, 0, 0, e, t), this.ctx.getImageData(0, 0, e, t);
 	}
-	async grabNativeFrame() {
-		let e = await this.captureNativeFrame();
-		if (e) return e;
-		let t = this.grabFrame();
-		if (t) return {
-			data: new Uint8Array(t.data.buffer, t.data.byteOffset, t.data.byteLength),
-			width: t.width,
-			height: t.height,
-			format: "rgba"
-		};
-	}
 	async grabLumaFrame() {
 		let e = await this.captureNativeFrame();
 		if (e) return {
@@ -10880,7 +10869,7 @@ var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
 		let e;
 		try {
 			if (e = await this.takeLatestFrame(wi), e) {
-				let t = await this.videoFrameToImageFrame(e);
+				let t = await this.videoFrameToNativeFrame(e);
 				if (t) return t;
 				this.disableNativeCapture();
 			}
@@ -10928,7 +10917,7 @@ var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
 		let t = this.latestFrame;
 		return this.latestFrame = void 0, t;
 	}
-	async videoFrameToImageFrame(e) {
+	async videoFrameToNativeFrame(e) {
 		let t = e.format === "NV12" ? "nv12" : e.format === "I420" ? "i420" : void 0;
 		if (!t) return;
 		let n = e.visibleRect;
@@ -10982,7 +10971,7 @@ var Di = class {
 	}
 }, Oi = 20, ki = 1, Ai = class {
 	constructor() {
-		this.nextRequestId = 0, this.captureInFlight = !1, this.samplingGeneration = 0, this.pendingRawFrame = !1, this.decodeBytes = !1, this.callbacks = /* @__PURE__ */ new Set();
+		this.nextRequestId = 0, this.captureInFlight = !1, this.samplingGeneration = 0, this.decodeBytes = !1, this.callbacks = /* @__PURE__ */ new Set();
 	}
 	onDecode(e) {
 		return this.callbacks.add(e), () => this.callbacks.delete(e);
@@ -10993,10 +10982,6 @@ var Di = class {
 	async start(e, t) {
 		this.stop(), this.camera = new Ti(e), await this.camera.start(t);
 		let n = t?.scanHz ?? Oi;
-		if (t?.rawFrames) {
-			this.startSampling(() => this.tickRaw(), n);
-			return;
-		}
 		this.decodeBytes = t?.decodeBytes ?? !1;
 		let r = Math.max(1, Math.floor(t?.decodeWorkers ?? ki));
 		this.pool = new Di(r, () => this.createDecodeWorker()), this.startSampling(() => this.tick(), n);
@@ -11034,7 +11019,7 @@ var Di = class {
 		a();
 	}
 	stop() {
-		this.samplingGeneration++, this.timeoutHandle !== void 0 && (clearTimeout(this.timeoutHandle), this.timeoutHandle = void 0), this.pool?.forEach((e) => e.terminate()), this.pool = void 0, this.camera?.stop(), this.camera = void 0, this.captureInFlight = !1, this.pendingRawFrame = !1, this.decodeBytes = !1;
+		this.samplingGeneration++, this.timeoutHandle !== void 0 && (clearTimeout(this.timeoutHandle), this.timeoutHandle = void 0), this.pool?.forEach((e) => e.terminate()), this.pool = void 0, this.camera?.stop(), this.camera = void 0, this.captureInFlight = !1, this.decodeBytes = !1;
 	}
 	tick() {
 		if (this.captureInFlight || !this.camera || !this.pool || !this.pool.hasIdle) return;
@@ -11066,22 +11051,6 @@ var Di = class {
 			});
 		} catch (e) {
 			this.captureInFlight = !1, console.warn("[screenferry] frame capture failed:", e);
-		}
-	}
-	tickRaw() {
-		if (this.pendingRawFrame || !this.camera) return;
-		let e = this.camera;
-		this.pendingRawFrame = !0;
-		try {
-			e.grabNativeFrame().then((e) => {
-				if (e) for (let t of this.callbacks) t(e);
-			}).catch((e) => {
-				console.warn("[screenferry] raw frame capture failed:", e);
-			}).finally(() => {
-				this.pendingRawFrame = !1;
-			});
-		} catch (e) {
-			this.pendingRawFrame = !1, console.warn("[screenferry] raw frame capture failed:", e);
 		}
 	}
 }, ji = class {
@@ -11156,236 +11125,31 @@ var zi = class {
 	createDecoder() {
 		return new Bi();
 	}
-}, Hi;
-function Ui() {
-	return Hi || (Hi = (async () => {
-		if (typeof document > "u") throw Error("screenferry cimbarBackend: requires a DOM (`document`) to load its WASM module — must run on the main thread, not a worker");
-		let [{ default: e }, { default: t }] = await Promise.all([import("./cimbar-BfAA118n.js"), import("./cimbar-uAgn5oEV.js")]);
-		return new Promise((n, r) => {
-			globalThis.Module = {
-				locateFile: (t) => t.endsWith(".wasm") ? e : t,
-				onRuntimeInitialized: () => n(globalThis.Module)
-			};
-			let i = document.createElement("script");
-			i.src = t, i.onerror = () => r(/* @__PURE__ */ Error("screenferry cimbarBackend: failed to load the vendored WASM glue script")), document.head.appendChild(i);
-		});
-	})(), Hi);
-}
-//#endregion
-//#region src/backends/cimbar/index.ts
-var Wi = 68, Gi = 1024, Ki = 4, qi = 12, Ji = 420, Yi = class {
-	constructor(e) {
-		this.module = e, this.ptr = 0;
-	}
-	ensure(e) {
-		return (!this.view || this.view.length < e || this.view.buffer !== this.module.HEAPU8.buffer) && (this.ptr && this.module._free(this.ptr), this.ptr = this.module._malloc(e), this.view = new Uint8Array(this.module.HEAPU8.buffer, this.ptr, e)), this.view;
-	}
-	get byteOffset() {
-		return this.ptr;
-	}
-};
-function Xi(e) {
-	let t = e.getContext("webgl2") ?? e.getContext("webgl");
-	if (!t) throw Error("screenferry cimbarBackend: could not acquire a WebGL context on the offscreen encode canvas");
-	return t;
-}
-function Zi(e, t) {
-	let { width: n, height: r } = e, i = new Uint8Array(n * r * 4);
-	t.readPixels(0, 0, n, r, t.RGBA, t.UNSIGNED_BYTE, i);
-	let a = n * 4, o = new Uint8Array(i.length);
-	for (let e = 0; e < r; e++) {
-		let t = e * a, n = (r - e - 1) * a;
-		o.set(i.subarray(t, t + a), n);
-	}
-	return {
-		data: o,
-		width: n,
-		height: r
-	};
-}
-var Qi, $i = 16;
-function ea(e) {
-	return Qi ??= (async () => {
-		let t = await Ui(), n = e + $i, r = new OffscreenCanvas(n, n);
-		t.canvas = r, t._cimbare_init_window(n, n);
-		let i = Xi(r);
-		return ta(i), {
-			module: t,
-			canvas: r,
-			gl: i
-		};
-	})(), Qi;
-}
-function ta(e) {
-	let t = e.getExtension("WEBGL_debug_renderer_info");
-	t && console.info("[screenferry] cimbar GPU renderer:", e.getParameter(t.UNMASKED_RENDERER_WEBGL));
-}
-var na = /* @__PURE__ */ new Map();
-function ra(e, t) {
-	if (t >= 0) return;
-	let n = Date.now();
-	n - (na.get(e) ?? 0) < 5e3 || (na.set(e, n), console.warn(`[screenferry] cimbar encoder: ${e} returned ${t}`));
-}
-var ia = {
-	id: "cimbar",
-	compressesInternally: !0,
-	async *encode(e, t) {
-		let n = t?.frameSize ?? Gi, r = t?.mode ?? Wi, { module: i, canvas: a, gl: o } = await ea(n);
-		i._cimbare_configure(r, t?.compressionLevel ?? -1);
-		let s = new TextEncoder().encode("data.bin"), c = i._malloc(s.length);
-		try {
-			i.HEAPU8.set(s, c), ra("_cimbare_init_encode", i._cimbare_init_encode(c, s.length, -1));
-		} finally {
-			i._free(c);
-		}
-		let l = i._cimbare_encode_bufsize(), u = new Yi(i);
-		for (let t = 0; t < e.length; t += l) {
-			let n = e.subarray(t, t + l);
-			u.ensure(Math.max(n.length, 1)).set(n), ra("_cimbare_encode", i._cimbare_encode(u.byteOffset, n.length));
-		}
-		for (ra("_cimbare_encode (finalize)", i._cimbare_encode(u.byteOffset, 0));;) ra("_cimbare_next_frame", i._cimbare_next_frame(0)), ra("_cimbare_render", i._cimbare_render()), yield Zi(a, o);
-	},
-	createDecoder() {
-		return new aa();
-	}
-}, aa = class e {
-	constructor() {
-		this.pending = [], this.loading = !1, this.modeAttempt = 0, this.extractStats = /* @__PURE__ */ new Map(), this.statsWindowStart = 0, this.lastProgress = 0;
-	}
-	static {
-		this.CANDIDATE_MODES = [
-			68,
-			67,
-			66,
-			4
-		];
-	}
-	get isComplete() {
-		return this.result !== void 0;
-	}
-	get progress() {
-		return this.isComplete ? 1 : this.lastProgress;
-	}
-	getResult() {
-		if (!this.result) throw Error("CimbarDecoder: cannot get result before decoding is complete");
-		return this.result;
-	}
-	addFrame(e) {
-		if (!this.isComplete) {
-			if (!this.module) {
-				this.pending.push(e), this.loading || (this.loading = !0, Ui().then((e) => {
-					this.module = e, this.imgBuffer = new Yi(e), this.chunkBuffer = new Yi(e), this.decompressBuffer = new Yi(e), this.errorBuffer = new Yi(e), this.drainPending();
-				}));
-				return;
-			}
-			this.processFrame(e);
-		}
-	}
-	drainPending() {
-		for (let e of this.pending.splice(0)) {
-			if (this.isComplete) break;
-			this.processFrame(e);
-		}
-	}
-	processFrame(t) {
-		let n = this.module, r = this.imgBuffer, i = this.chunkBuffer;
-		if (!n || !r || !i) return;
-		let a = this.lockedMode ?? e.CANDIDATE_MODES[this.modeAttempt % e.CANDIDATE_MODES.length];
-		this.lockedMode === void 0 && n._cimbard_configure_decode(a), r.ensure(t.data.length).set(t.data);
-		let o = n._cimbard_get_bufsize(), s = i.ensure(o), c = t.format === "nv12" ? qi : t.format === "i420" ? Ji : Ki, l = n._cimbard_scan_extract_decode(r.byteOffset, t.width, t.height, c, i.byteOffset, s.length);
-		if (this.recordExtractStat(l), l > 0 && this.lockedMode === void 0 && (this.lockedMode = a), l === 0) {
-			this.reportError(), this.lockedMode === void 0 && this.modeAttempt++;
-			return;
-		}
-		if (l < 0) {
-			this.reportError(), this.lockedMode === void 0 && this.modeAttempt++;
-			return;
-		}
-		let u = n._cimbard_fountain_decode(i.byteOffset, l);
-		if (this.updateProgress(), u === -5n) {
-			console.warn("[screenferry] cimbar fountain_decode: chunk size mismatch (-5) — likely a wrong candidate mode");
-			return;
-		}
-		if (u <= 0n) return;
-		let d = Number(u & 4294967295n);
-		this.result = this.readDecompressedFile(d);
-	}
-	readDecompressedFile(e) {
-		let t = this.module, n = this.decompressBuffer;
-		if (!t || !n) throw Error("CimbarDecoder: module not loaded");
-		let r = t._cimbard_get_decompress_bufsize(), i = n.ensure(r), a = [], o = 0;
-		for (;;) {
-			let s = t._cimbard_decompress_read(e, n.byteOffset, r);
-			if (s <= 0) break;
-			a.push(i.slice(0, s)), o += s;
-		}
-		let s = new Uint8Array(o), c = 0;
-		for (let e of a) s.set(e, c), c += e.length;
-		return s;
-	}
-	readReport() {
-		let e = this.module;
-		if (!e || !this.errorBuffer) return;
-		let t = this.errorBuffer.ensure(256), n = e._cimbard_get_report(this.errorBuffer.byteOffset, t.length);
-		if (!(n <= 0)) return new TextDecoder().decode(t.subarray(0, n));
-	}
-	reportError() {
-		let e = this.readReport();
-		e && console.warn("[screenferry] cimbar decode error:", e);
-	}
-	updateProgress() {
-		let e = this.readReport();
-		if (!e) return;
-		let t = /\[([^\]]*)\]/.exec(e);
-		if (!t) return;
-		let n = t[1].split(",").map((e) => Number.parseFloat(e.trim())).filter((e) => Number.isFinite(e));
-		if (n.length === 0) return;
-		let r = Math.max(...n);
-		this.lastProgress = Math.min(1, r > 1 ? r / 100 : r);
-	}
-	recordExtractStat(e) {
-		let t = e > 0 ? Infinity : e;
-		this.extractStats.set(t, (this.extractStats.get(t) ?? 0) + 1);
-		let n = Date.now();
-		if (this.statsWindowStart === 0 && (this.statsWindowStart = n), n - this.statsWindowStart < 1e3) return;
-		let r = [...this.extractStats.entries()].sort(([e], [t]) => e - t).map(([e, t]) => `${e === Infinity ? ">0" : e}=${t}`).join(", ");
-		console.debug(`[screenferry] cimbar extractedLen outcomes (last ~1s): ${r}`), this.extractStats.clear(), this.statsWindowStart = n;
-	}
-}, oa = {
+}, Hi = {
 	"qr-lt": _i,
-	"qr-bin-lt": Vi,
-	cimbar: ia
-}, sa = "sf1:backend=";
-function ca(e) {
-	return `${sa}${e}`;
+	"qr-bin-lt": Vi
+}, Ui = "sf1:backend=";
+function Wi(e) {
+	return `${Ui}${e}`;
 }
-function la(e) {
-	let t = typeof e == "string" ? e : e instanceof Uint8Array ? new TextDecoder().decode(e) : void 0;
-	if (t === void 0) return;
-	let n = t.toLowerCase();
-	if (n.startsWith(sa)) return n.slice(12);
+function Gi(e) {
+	let t = (typeof e == "string" ? e : new TextDecoder().decode(e)).toLowerCase();
+	if (t.startsWith(Ui)) return t.slice(12);
 }
-function ua(e) {
-	return Object.prototype.hasOwnProperty.call(oa, e) ? oa[e] : void 0;
+function Ki(e) {
+	return Object.prototype.hasOwnProperty.call(Hi, e) ? Hi[e] : void 0;
 }
-function da(e) {
-	return e === ia.id ? { rawFrames: !0 } : e === Vi.id ? { decodeBytes: !0 } : {};
+function qi(e) {
+	return e === Vi.id ? { decodeBytes: !0 } : {};
 }
-async function fa() {
-	try {
-		return await Ui(), !0;
-	} catch {
-		return !1;
-	}
-}
-async function pa(e, t = fa) {
-	return e === "qr-lt" ? _i : e === "qr-bin-lt" ? Vi : e === "cimbar" || await t() ? ia : _i;
+async function Ji(e) {
+	return e === "qr-bin-lt" ? Vi : _i;
 }
 //#endregion
 //#region src/backends/display-driver.ts
-var ma = 10, ha = class {
+var Yi = 10, Xi = class {
 	constructor(e, t, n) {
-		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? ma, this.onFrameSent = n?.onFrameSent;
+		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? Yi, this.onFrameSent = n?.onFrameSent;
 	}
 	start() {
 		this.running || (this.running = !0, this.iterator = this.source[Symbol.asyncIterator](), this.lastFrameTime = 0, this.visibilityListener = () => {
@@ -11412,21 +11176,14 @@ var ma = 10, ha = class {
 	async renderNextFrame() {
 		if (!this.iterator) return;
 		let { value: e, done: t } = await this.iterator.next();
-		t || e === void 0 || !this.running || (typeof e == "string" || e instanceof Uint8Array ? hi(e, this.canvas, this.opts) : this.renderImageFrame(e), this.onFrameSent?.(this.frameIndex), this.frameIndex++);
+		t || e === void 0 || !this.running || (hi(e, this.canvas, this.opts), this.onFrameSent?.(this.frameIndex), this.frameIndex++);
 	}
-	renderImageFrame(e) {
-		this.canvas.width = e.width, this.canvas.height = e.height;
-		let t = this.canvas.getContext("2d");
-		if (!t) throw Error("DisplayDriver: failed to acquire a 2D rendering context");
-		let n = e.data, r = new Uint8ClampedArray(n.buffer, n.byteOffset, n.length);
-		t.putImageData(new ImageData(r, e.width, e.height), 0, 0);
-	}
-}, ga = 10;
-function _a(e) {
+}, Zi = 10;
+function Qi(e) {
 	return "preferredBackend" in e;
 }
-async function* va(e, t, n) {
-	let r = e[Symbol.asyncIterator](), i = ca(t), a = 0;
+async function* $i(e, t, n) {
+	let r = e[Symbol.asyncIterator](), i = Wi(t), a = 0;
 	for (;;) {
 		a % n === 0 && (yield i);
 		let { value: e, done: t } = await r.next();
@@ -11434,18 +11191,18 @@ async function* va(e, t, n) {
 		yield e, a++;
 	}
 }
-async function* ya(e, t) {
+async function* ea(e, t) {
 	let n = new Uint8Array(await e.arrayBuffer()), r = "name" in e && typeof e.name == "string" ? e.name : "file", i = e.type || "application/octet-stream";
-	if (t && _a(t)) {
-		let e = await pa(t.preferredBackend), a = await yi(n, {
+	if (t && Qi(t)) {
+		let e = await Ji(t.preferredBackend), a = await yi(n, {
 			filename: r,
 			mimeType: i
 		}, {
 			maxFragmentLength: t.fragmentSize,
 			backend: e,
 			backendOptions: t.backendOptions
-		}), o = Math.max(1, t.headerIntervalFrames ?? ga);
-		yield* va(a, e.id, o);
+		}), o = Math.max(1, t.headerIntervalFrames ?? Zi);
+		yield* $i(a, e.id, o);
 		return;
 	}
 	yield* await yi(n, {
@@ -11457,7 +11214,7 @@ async function* ya(e, t) {
 		backendOptions: t?.backendOptions
 	});
 }
-var ba = class {
+var ta = class {
 	constructor(e) {
 		this.decoder = new bi(e);
 	}
@@ -11474,9 +11231,9 @@ var ba = class {
 		let { filename: e, mimeType: t, bytes: n } = await this.decoder.getResult();
 		return new File([n], e, { type: t });
 	}
-}, xa = class {
+}, na = class {
 	constructor(e = {}, t) {
-		this.scanner = new Ai(), this.goodputTracker = new ji(), this.settled = !1, this.callbacks = e, this.decoder = new ba(t);
+		this.scanner = new Ai(), this.goodputTracker = new ji(), this.settled = !1, this.callbacks = e, this.decoder = new ta(t);
 	}
 	async start(e, t) {
 		this.settled = !1, this.goodputTracker.reset(), this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, t);
@@ -11504,7 +11261,7 @@ var ba = class {
 			}));
 		}
 	}
-}, Sa = class {
+}, ra = class {
 	constructor(e = {}) {
 		this.callbacks = e;
 	}
@@ -11518,7 +11275,7 @@ var ba = class {
 		return this.decoder?.isComplete ?? !1;
 	}
 	addFrame(e) {
-		let t = la(e);
+		let t = Gi(e);
 		if (t !== void 0) {
 			this.resolvedBackendId || this.resolve(t);
 			return;
@@ -11534,19 +11291,18 @@ var ba = class {
 		return this.decoder.getResult();
 	}
 	resolve(e) {
-		let t = ua(e);
-		t && (this.resolvedBackendId = e, this.decoder = new ba(t), this.callbacks.onBackendResolved?.(e));
+		let t = Ki(e);
+		t && (this.resolvedBackendId = e, this.decoder = new ta(t), this.callbacks.onBackendResolved?.(e));
 	}
-}, Ca = class {
+}, ia = class {
 	constructor(e = {}) {
-		this.scanner = new Ai(), this.goodputTracker = new ji(), this.settled = !1, this.callbacks = e, this.decoder = new Sa({ onBackendResolved: (e) => {
+		this.scanner = new Ai(), this.goodputTracker = new ji(), this.settled = !1, this.callbacks = e, this.decoder = new ra({ onBackendResolved: (e) => {
 			this.callbacks.onBackendResolved?.(e), e !== _i.id && this.switchCaptureMode(e);
 		} });
 	}
 	async start(e, t) {
 		this.settled = !1, this.goodputTracker.reset(), this.videoElement = e, this.scannerOpts = t, this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, {
 			...t,
-			rawFrames: !1,
 			decodeBytes: !1
 		});
 	}
@@ -11578,7 +11334,7 @@ var ba = class {
 		try {
 			await this.scanner.start(this.videoElement, {
 				...this.scannerOpts,
-				...da(e)
+				...qi(e)
 			});
 		} catch (e) {
 			this.callbacks.onError?.(e);
@@ -11586,6 +11342,6 @@ var ba = class {
 	}
 };
 //#endregion
-export { Ti as Camera, ha as DisplayDriver, ge as IntegrityError, Ca as NegotiatingReceiverSession, Sa as NegotiatingStreamDecoder, xa as ReceiverSession, Ai as Scanner, ba as StreamDecoder, ia as cimbarBackend, ya as encodeToFrames, fa as probeCimbarAvailable, Vi as qrBinLtBackend, _i as qrLtBackend, pa as resolvePreferredBackend };
+export { Ti as Camera, Xi as DisplayDriver, ge as IntegrityError, ia as NegotiatingReceiverSession, ra as NegotiatingStreamDecoder, na as ReceiverSession, Ai as Scanner, ta as StreamDecoder, ea as encodeToFrames, Vi as qrBinLtBackend, _i as qrLtBackend, Ji as resolvePreferredBackend };
 
 //# sourceMappingURL=index.js.map

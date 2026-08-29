@@ -19,10 +19,11 @@ export interface DecodedFile extends FileMeta {
  * if that's smaller, and prepends the metadata header. The result is what
  * gets fountain-encoded, not the raw file bytes.
  *
- * `skipCompression` (set for a backend with `compressesInternally: true`,
- * e.g. Cimbar) skips the gzip pass entirely rather than just discarding its
- * result — the backend already compresses the envelope itself, so running
- * gzip first would both waste CPU and hand it already-incompressible bytes.
+ * `skipCompression` (set for a backend with `compressesInternally: true`)
+ * skips the gzip pass entirely rather than just discarding its result — such
+ * a backend already compresses the envelope itself, so running gzip first
+ * would both waste CPU and hand it already-incompressible bytes. Neither
+ * backend shipped here sets it.
  */
 export async function buildEnvelope(
   bytes: Uint8Array,
@@ -67,8 +68,8 @@ export async function encodeFileToParts<F extends Frame = string>(
     skipCompression: backend.compressesInternally,
   });
   // `backendOptions` lets a caller reach a specific backend's own encode
-  // options (e.g. `CimbarEncodeOptions.frameSize`) — `qrLtBackend` only
-  // understands `maxFragmentLength`, so that stays the fallback shape.
+  // options — both backends shipped here only understand
+  // `maxFragmentLength`, so that stays the fallback shape.
   return backend.encode(
     envelope,
     opts?.backendOptions ?? { maxFragmentLength: opts?.maxFragmentLength },

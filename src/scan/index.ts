@@ -11,32 +11,19 @@ export interface ScannerOptions extends CameraOptions {
    */
   scanHz?: number;
   /**
-   * When true, skips the built-in QR text-decode worker entirely and
-   * reports each captured camera frame's raw pixels via `onDecode` instead
-   * (as an `ImageFrame`) — for a backend (e.g. Cimbar) whose own decoder
-   * consumes pixels directly rather than pre-decoded text. Pair this with
-   * passing the matching `backend` to `StreamDecoder`/`ReceiverSession`;
-   * nothing checks that the two agree. Defaults to `false` (QR text decode,
-   * v1 behavior, unchanged).
-   */
-  rawFrames?: boolean;
-  /**
-   * When true (and `rawFrames` is false), the built-in QR decode worker
-   * hands back each decoded symbol's raw bytes (`Uint8Array`) via
-   * `onDecode` instead of its text — for a backend (e.g. `qrBinLtBackend`)
-   * whose `Frame` is raw bytes rather than a UR part string. Pair this with
-   * passing the matching `backend` to `StreamDecoder`/`ReceiverSession`;
-   * nothing checks that the two agree. Defaults to `false` (text, v1
-   * behavior, unchanged).
+   * When true, the built-in QR decode worker hands back each decoded
+   * symbol's raw bytes (`Uint8Array`) via `onDecode` instead of its text —
+   * for a backend (e.g. `qrBinLtBackend`) whose `Frame` is raw bytes rather
+   * than a UR part string. Pair this with passing the matching `backend` to
+   * `StreamDecoder`/`ReceiverSession`; nothing checks that the two agree.
+   * Defaults to `false` (text, v1 behavior, unchanged).
    */
   decodeBytes?: boolean;
   /**
-   * Number of concurrent decode workers to spread captured frames across
-   * (ignored when `rawFrames` is true — that path never touches the
-   * decode-worker pool at all). Previously always 1: a 30fps camera fed a
-   * single serialized zxing-wasm decoder, so raising `scanHz` past that
-   * decoder's own throughput bought nothing — captured frames just piled
-   * up waiting on the one worker.
+   * Number of concurrent decode workers to spread captured frames across.
+   * Previously always 1: a 30fps camera fed a single serialized zxing-wasm
+   * decoder, so raising `scanHz` past that decoder's own throughput bought
+   * nothing — captured frames just piled up waiting on the one worker.
    *
    * Defaults to 1, which is exactly the original single-worker behavior —
    * safe on any device, including one too slow to benefit from more.
@@ -67,8 +54,8 @@ const DEFAULT_DECODE_WORKERS = 1;
 
 /**
  * Camera-facing scanner: captures frames and reports decoded content (QR
- * text or bytes by default, or raw pixels in `rawFrames` mode). Deliberately
- * knows nothing about fountain parts or transfer state — that's
+ * text, or raw bytes in `decodeBytes` mode). Deliberately knows nothing
+ * about fountain parts or transfer state — that's
  * `StreamDecoder`'s job (Stage 6) — so this stays testable without a camera
  * (worker protocol only) and swappable (e.g. screen-share frames instead of
  * a camera, later) without touching decode logic.
@@ -91,7 +78,6 @@ export class Scanner {
   private captureInFlight = false;
   /** Bumped by `startSampling`/`stop` so a chain outlives neither — see `startSampling`. */
   private samplingGeneration = 0;
-  private pendingRawFrame = false;
   private decodeBytes = false;
   private readonly callbacks = new Set<DecodeCallback>();
 
@@ -112,11 +98,6 @@ export class Scanner {
     await this.camera.start(opts);
 
     const scanHz = opts?.scanHz ?? DEFAULT_SCAN_HZ;
-
-    if (opts?.rawFrames) {
-      this.startSampling(() => this.tickRaw(), scanHz);
-      return;
-    }
 
     this.decodeBytes = opts?.decodeBytes ?? false;
 
@@ -210,7 +191,6 @@ export class Scanner {
     this.camera = undefined;
 
     this.captureInFlight = false;
-    this.pendingRawFrame = false;
     this.decodeBytes = false;
   }
 
@@ -275,35 +255,6 @@ export class Scanner {
     } catch (err) {
       this.captureInFlight = false;
       console.warn('[screenferry] frame capture failed:', err);
-    }
-  }
-
-  private tickRaw(): void {
-    // `grabNativeFrame` is async (unlike `grabFrame`) -- guards re-entrancy
-    // the same way `tick`/`captureInFlight` does, so a slow capture (or a
-    // scanHz higher than the capture path can keep up with) can't pile up
-    // overlapping calls.
-    if (this.pendingRawFrame || !this.camera) return;
-    const camera = this.camera;
-
-    this.pendingRawFrame = true;
-    // Same synchronous-throw guard as `tick` — see the comment there.
-    try {
-      void camera
-        .grabNativeFrame()
-        .then((frame) => {
-          if (!frame) return;
-          for (const callback of this.callbacks) callback(frame);
-        })
-        .catch((err: unknown) => {
-          console.warn('[screenferry] raw frame capture failed:', err);
-        })
-        .finally(() => {
-          this.pendingRawFrame = false;
-        });
-    } catch (err) {
-      this.pendingRawFrame = false;
-      console.warn('[screenferry] raw frame capture failed:', err);
     }
   }
 }

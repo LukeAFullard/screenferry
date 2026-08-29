@@ -1,18 +1,27 @@
 import { qrLtBackend } from './qr-lt';
 import { qrBinLtBackend } from './qr-bin-lt';
-import { cimbarBackend } from './cimbar';
-import { loadCimbarModule } from './cimbar/module';
 import type { Frame, TransferBackend } from './types';
 
-export type PreferredBackend = 'auto' | 'qr-lt' | 'qr-bin-lt' | 'cimbar';
+/**
+ * Which backend a sender asks `encodeToFrames` to negotiate with.
+ *
+ * `"auto"` is retained only so existing callers keep compiling; it now
+ * resolves straight to `qrLtBackend`. Prefer naming one explicitly — see
+ * `resolvePreferredBackend`.
+ *
+ * @deprecated `"auto"` — pick `"qr-lt"` (universally decodable) or
+ * `"qr-bin-lt"` (faster, needs a receiver that recognizes it) instead.
+ * There is no longer any device capability left to probe for, so `"auto"`
+ * cannot make a better choice than you can.
+ */
+export type PreferredBackend = 'auto' | 'qr-lt' | 'qr-bin-lt';
 
-type NegotiableBackendId = 'qr-lt' | 'qr-bin-lt' | 'cimbar';
+type NegotiableBackendId = 'qr-lt' | 'qr-bin-lt';
 
 /** Every backend `resolvePreferredBackend`/the header-frame protocol can name, keyed by its `TransferBackend.id`. */
 const NEGOTIABLE_BACKENDS: Record<NegotiableBackendId, TransferBackend<Frame>> = {
   'qr-lt': qrLtBackend,
   'qr-bin-lt': qrBinLtBackend,
-  cimbar: cimbarBackend,
 };
 
 /**
@@ -33,8 +42,7 @@ export function encodeHeaderFrame(backendId: string): string {
 
 /**
  * Parses a received frame as a header/beacon frame, if it is one —
- * `undefined` otherwise (including for an `ImageFrame`, which can never be
- * one).
+ * `undefined` otherwise.
  *
  * A `Uint8Array` frame (from `Scanner` in `decodeBytes` mode, after
  * switching to `qrBinLtBackend`) is decoded as UTF-8 text first — the
@@ -52,20 +60,14 @@ export function encodeHeaderFrame(backendId: string): string {
  * Safe as long as backend ids themselves are lowercase (all of them are).
  */
 export function decodeHeaderFrame(frame: Frame): string | undefined {
-  const text =
-    typeof frame === 'string'
-      ? frame
-      : frame instanceof Uint8Array
-        ? new TextDecoder().decode(frame)
-        : undefined;
-  if (text === undefined) return undefined;
+  const text = typeof frame === 'string' ? frame : new TextDecoder().decode(frame);
 
   const lower = text.toLowerCase();
   if (!lower.startsWith(HEADER_PREFIX)) return undefined;
   return lower.slice(HEADER_PREFIX.length);
 }
 
-/** Looks up a negotiable backend by the id a header frame announced. `undefined` for an id this build doesn't recognize (a newer sender, a typo, noise). */
+/** Looks up a negotiable backend by the id a header frame announced. `undefined` for an id this build doesn't recognize (a newer sender, a removed backend, a typo, noise). */
 export function backendForId(id: string): TransferBackend<Frame> | undefined {
   return Object.prototype.hasOwnProperty.call(NEGOTIABLE_BACKENDS, id)
     ? NEGOTIABLE_BACKENDS[id as NegotiableBackendId]
@@ -76,56 +78,31 @@ export function backendForId(id: string): TransferBackend<Frame> | undefined {
  * Which `Scanner` capture mode a resolved backend's `Frame` needs —
  * `NegotiatingReceiverSession` uses this to restart `Scanner` correctly
  * once it knows which backend the sender picked, instead of hardcoding a
- * per-backend-id branch itself. `qrLtBackend` needs neither flag (its
- * `Frame` is text, `Scanner`'s default mode); `{}` covers it and any future
+ * per-backend-id branch itself. `qrLtBackend` needs no flag (its `Frame`
+ * is text, `Scanner`'s default mode); `{}` covers it and any future
  * text-frame backend without a change here.
  */
-export function scannerOptionsForBackend(id: string): {
-  rawFrames?: boolean;
-  decodeBytes?: boolean;
-} {
-  if (id === cimbarBackend.id) return { rawFrames: true };
+export function scannerOptionsForBackend(id: string): { decodeBytes?: boolean } {
   if (id === qrBinLtBackend.id) return { decodeBytes: true };
   return {};
 }
 
 /**
- * Best-effort capability probe: does `cimbarBackend` actually work in this
- * environment? Never throws — a failure (unsupported browser, WASM
- * blocked by CSP, no WebGL, a non-browser host like this project's own
- * Node-based test harness) resolves `false`, so callers can build a
- * fallback UI rather than crash. Only attempts to *load* the WASM module,
- * not a full encode/decode self-test — see the README's Cimbar section
- * for why a deeper self-test isn't done here.
- */
-export async function probeCimbarAvailable(): Promise<boolean> {
-  try {
-    await loadCimbarModule();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Resolves `PreferredBackend` to a concrete backend. `"auto"` probes
- * Cimbar's availability and falls back to `qrLtBackend` if it isn't usable
- * here — deliberately never `qrBinLtBackend`, even though it has no extra
- * capability requirement over `qrLtBackend` and is strictly more
- * throughput: `"auto"` exists so a sender always degrades to something a
- * receiver on *any* version of this library can decode, and an older
- * receiver's `backendForId` won't recognize `qr-bin-lt`. Opt into it
- * explicitly (`preferredBackend: 'qr-bin-lt'`, or `backend: qrBinLtBackend`
- * pinned) once you know your receivers support it. `probe` is injectable
- * (defaults to `probeCimbarAvailable`) purely for testing the resolution
- * logic itself without depending on a real WASM/browser environment.
+ * Resolves `PreferredBackend` to a concrete backend.
+ *
+ * Both supported backends run anywhere the library itself does (no WASM
+ * beyond the QR decoder, no GPU, no per-device capability), so this is now
+ * a pure mapping with nothing to probe: `"auto"` resolves to `qrLtBackend`,
+ * the one every version of this library can decode. It is deliberately
+ * never `qrBinLtBackend` — that's strictly more throughput, but an older
+ * receiver's `backendForId` won't recognize the `qr-bin-lt` header id, so
+ * it must be opted into explicitly (`preferredBackend: 'qr-bin-lt'`, or
+ * `backend: qrBinLtBackend` pinned) once you know your receivers support
+ * it.
  */
 export async function resolvePreferredBackend(
   preferred: PreferredBackend,
-  probe: () => Promise<boolean> = probeCimbarAvailable,
 ): Promise<TransferBackend<Frame>> {
-  if (preferred === 'qr-lt') return qrLtBackend;
   if (preferred === 'qr-bin-lt') return qrBinLtBackend;
-  if (preferred === 'cimbar') return cimbarBackend;
-  return (await probe()) ? cimbarBackend : qrLtBackend;
+  return qrLtBackend;
 }

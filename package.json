@@ -1,6 +1,6 @@
 {
   "name": "screenferry",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Framework-agnostic zero-backend TypeScript library for transferring files via animated 2D barcodes",
   "type": "module",
   "main": "./dist/index.cjs",
