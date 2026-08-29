@@ -1,3 +1,4 @@
+import './env/polyfills';
 import { encodeFileToParts, TransferDecoder } from './codec/transfer';
 import { Scanner, type ScannerOptions } from './scan/index';
 import { GoodputTracker } from './scan/goodput';
