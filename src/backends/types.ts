@@ -15,6 +15,20 @@ export interface BackendDecoder<F extends Frame = Frame> {
   readonly isComplete: boolean;
   /** Estimated completion ratio (0-1), if the backend can produce one. */
   readonly progress?: number;
+  /**
+   * Total envelope bytes the sender is transmitting, if the backend can
+   * report it before the transfer finishes — `undefined` until known (both
+   * fountain backends learn it from the first frame they accept). Wire
+   * bytes, not the original file's size.
+   */
+  readonly totalBytes?: number;
+  /**
+   * Envelope bytes recovered so far, if the backend can report it. Must be
+   * monotonic: `TransferMetrics.bytesPerSecond` differences consecutive
+   * readings, and a reading that went backwards would show as a negative
+   * rate.
+   */
+  readonly bytesReceived?: number;
   /** Envelope-encoded bytes — not yet decompressed or checksum-verified. */
   getResult(): Uint8Array;
 }

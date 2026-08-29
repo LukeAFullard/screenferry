@@ -85,6 +85,14 @@ const video = document.querySelector('video'); // shows the live camera preview
 
 const session = new ReceiverSession({
   onProgress: (p) => console.log(`~${Math.round(p * 100)}%`), // estimate, not exact
+  onMetrics: ({ bytesReceived, totalBytes, bytesPerSecond, elapsedMs }) => {
+    // Wall-clock throughput, fired alongside every onProgress.
+    console.log(`${(bytesPerSecond / 1024).toFixed(1)} KB/s, ${(elapsedMs / 1000).toFixed(0)}s in`);
+    if (totalBytes) {
+      const secondsLeft = (totalBytes - bytesReceived) / bytesPerSecond;
+      console.log(`~${secondsLeft.toFixed(0)}s remaining`);
+    }
+  },
   onComplete: (file) => {
     // `file` is a real File — name and type recovered from the sender.
     const url = URL.createObjectURL(file);
@@ -107,6 +115,29 @@ session.stop();
 If you have frame data from somewhere other than a camera (a test harness,
 a future screen-share receiver), use `StreamDecoder` directly — feed it
 strings via `addFrame()`, check `.isComplete`, then `await .getResult()`.
+It also exposes the same `.bytesReceived` / `.totalBytes` counters
+`onMetrics` is built from.
+
+**`onProgress` and `onMetrics` answer different questions**, which is why
+they're separate callbacks rather than one widened signature:
+
+- `onProgress` is the fountain decoder's own completion *estimate* — a
+  redundancy-adjusted heuristic that clamps just short of 1 until the
+  transfer actually completes. Right for a progress bar, wrong for
+  arithmetic.
+- `onMetrics` is real bytes over real milliseconds. `bytesPerSecond` is
+  measured over a short trailing window (~2s), not cumulatively: a
+  cumulative average never recovers from a stall (one autofocus hunt drags
+  it down for the rest of the transfer), which makes it useless for judging
+  whether a change you just made is helping. For the final "took N seconds
+  at M KB/s" summary, divide `bytesReceived` by `elapsedMs` from the last
+  event before `onComplete` — that's the honest cumulative figure, and it's
+  why no separate completion-time callback exists.
+
+`bytesReceived`/`totalBytes` count *wire* bytes — the gzipped payload plus
+the envelope header, as the backend frames it — so they won't match the
+delivered file's size exactly. `totalBytes` is `null` until the first frame
+is accepted, since the size travels in the frames themselves.
 
 **Scanning automatically prefers luminance-only capture when it's
 available**, for both `qrLtBackend` and `qrBinLtBackend` — no option to set,
@@ -289,8 +320,10 @@ way to check whether a backend works at all on a given browser/device) and
 real sender/receiver sections for actual cross-device testing. It also
 exposes live tuning controls — `fps`, `fragmentSize`, `scanHz`, and decode
 worker count (see the speed tuning notes on the page itself) — so you can
-experiment directly on a given device rather than editing code. The sender
-canvas and receiver video are both resizable (drag the bottom-right corner) and the
+experiment directly on a given device rather than editing code, plus a live
+throughput readout (KB/s, bytes transferred, and elapsed/remaining time,
+wired to `onMetrics`) for comparing the two backends on real hardware. The
+sender canvas and receiver video are both resizable (drag the bottom-right corner) and the
 receiver shows the camera's actual negotiated resolution live. Not part of
 the published package.
 
@@ -329,7 +362,8 @@ The public API is exactly what the package's root export (`import ... from
 `qrLtBackend`, `qrBinLtBackend`, `NegotiatingStreamDecoder`,
 `NegotiatingReceiverSession`, `resolvePreferredBackend`, and their
 associated option/type exports (`TransferBackend`, `Frame`,
-`PreferredBackend`, `NegotiatedEncodeOptions`, ...). Internal modules
+`TransferMetrics`, `PreferredBackend`, `NegotiatedEncodeOptions`, ...).
+Internal modules
 (anything under `src/codec`, `src/backends`, `src/scan` in the source) are
 implementation details and can change in a minor or patch release.
 Versioning follows semver strictly: removing or renaming anything in that

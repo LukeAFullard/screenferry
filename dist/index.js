@@ -9955,12 +9955,31 @@ ${h(e)}
 		return e && e.__esModule ? e : { default: e };
 	};
 	Object.defineProperty(e, "__esModule", { value: !0 }), e.URDecoder = e.UREncoder = e.UR = void 0, e.UR = t(Mn()).default, e.UREncoder = t(vr()).default, e.URDecoder = t(br()).default;
-})))(), Sr = 2111;
-async function* Cr(e, t) {
-	let n = xr.UR.fromBuffer(Buffer.from(e)), r = new xr.UREncoder(n, t?.maxFragmentLength ?? Sr);
+})))();
+function Sr(e) {
+	let t = e?.expectedMessageLength;
+	return typeof t == "number" && t > 0 ? t : void 0;
+}
+function Cr(e) {
+	return e?.fountainDecoder;
+}
+function wr(e) {
+	let t = (e?.result)?.cbor?.length;
+	return typeof t == "number" && t > 0 ? t : void 0;
+}
+function Tr(e, t, n) {
+	if (e === void 0 || t <= 0) return 0;
+	let r = Math.min(1, n / t);
+	return Math.round(e * r);
+}
+//#endregion
+//#region src/backends/qr-lt/fountain.ts
+var Er = 2111;
+async function* Dr(e, t) {
+	let n = xr.UR.fromBuffer(Buffer.from(e)), r = new xr.UREncoder(n, t?.maxFragmentLength ?? Er);
 	for (;;) yield r.nextPart();
 }
-var wr = class {
+var Or = class {
 	constructor() {
 		this.decoder = new xr.URDecoder();
 	}
@@ -9973,17 +9992,23 @@ var wr = class {
 	get progress() {
 		return this.decoder.estimatedPercentComplete();
 	}
+	get totalBytes() {
+		return Sr(Cr(this.decoder)) ?? wr(this.decoder);
+	}
+	get bytesReceived() {
+		return this.isComplete() ? this.totalBytes ?? 0 : Tr(this.totalBytes, this.decoder.expectedPartCount(), this.decoder.receivedPartIndexes().length);
+	}
 	getResult() {
 		if (!this.decoder.isComplete()) throw Error("FountainDecoder: cannot get result before decoding is complete");
 		if (!this.decoder.isSuccess()) throw Error(`FountainDecoder: decode failed: ${this.decoder.resultError()}`);
 		return new Uint8Array(this.decoder.resultUR().decodeCBOR());
 	}
-}, Tr = /* @__PURE__ */ ((e) => (e[e.Border = -1] = "Border", e[e.Data = 0] = "Data", e[e.Function = 1] = "Function", e[e.Position = 2] = "Position", e[e.Timing = 3] = "Timing", e[e.Alignment = 4] = "Alignment", e))(Tr || {}), Er = [0, 1], Dr = [1, 0], Or = [2, 3], kr = [3, 2], Ar = {
-	L: Er,
-	M: Dr,
-	Q: Or,
-	H: kr
-}, jr = /^\d*$/, Mr = /^[A-Z0-9 $%*+./:-]*$/, Nr = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:", Pr = 1, Fr = 40, Ir = 3, Lr = 3, Rr = 40, zr = 10, Br = [
+}, kr = /* @__PURE__ */ ((e) => (e[e.Border = -1] = "Border", e[e.Data = 0] = "Data", e[e.Function = 1] = "Function", e[e.Position = 2] = "Position", e[e.Timing = 3] = "Timing", e[e.Alignment = 4] = "Alignment", e))(kr || {}), Ar = [0, 1], jr = [1, 0], Mr = [2, 3], Nr = [3, 2], Pr = {
+	L: Ar,
+	M: jr,
+	Q: Mr,
+	H: Nr
+}, Fr = /^\d*$/, Ir = /^[A-Z0-9 $%*+./:-]*$/, Lr = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:", Rr = 1, zr = 40, Br = 3, Vr = 3, Hr = 40, Ur = 10, Wr = [
 	[
 		-1,
 		7,
@@ -10156,7 +10181,7 @@ var wr = class {
 		30,
 		30
 	]
-], Vr = [
+], Gr = [
 	[
 		-1,
 		1,
@@ -10329,9 +10354,9 @@ var wr = class {
 		77,
 		81
 	]
-], Hr = class {
+], Kr = class {
 	constructor(e, t, n, r) {
-		if (this.version = e, this.ecc = t, e < Pr || e > Fr) throw RangeError("Version value out of range");
+		if (this.version = e, this.ecc = t, e < Rr || e > zr) throw RangeError("Version value out of range");
 		if (r < -1 || r > 7) throw RangeError("Mask value out of range");
 		this.size = e * 4 + 17;
 		let i = Array.from({ length: this.size }).fill(!1);
@@ -10356,7 +10381,7 @@ var wr = class {
 		return e >= 0 && e < this.size && t >= 0 && t < this.size && this.modules[t][e];
 	}
 	drawFunctionPatterns() {
-		for (let e = 0; e < this.size; e++) this.setFunctionModule(6, e, e % 2 == 0, Tr.Timing), this.setFunctionModule(e, 6, e % 2 == 0, Tr.Timing);
+		for (let e = 0; e < this.size; e++) this.setFunctionModule(6, e, e % 2 == 0, kr.Timing), this.setFunctionModule(e, 6, e % 2 == 0, kr.Timing);
 		this.drawFinderPattern(3, 3), this.drawFinderPattern(this.size - 4, 3), this.drawFinderPattern(3, this.size - 4);
 		let e = this.getAlignmentPatternPositions(), t = e.length;
 		for (let n = 0; n < t; n++) for (let r = 0; r < t; r++) n === 0 && r === 0 || n === 0 && r === t - 1 || n === t - 1 && r === 0 || this.drawAlignmentPattern(e[n], e[r]);
@@ -10366,11 +10391,11 @@ var wr = class {
 		let t = this.ecc[1] << 3 | e, n = t;
 		for (let e = 0; e < 10; e++) n = n << 1 ^ (n >>> 9) * 1335;
 		let r = (t << 10 | n) ^ 21522;
-		for (let e = 0; e <= 5; e++) this.setFunctionModule(8, e, Wr(r, e));
-		this.setFunctionModule(8, 7, Wr(r, 6)), this.setFunctionModule(8, 8, Wr(r, 7)), this.setFunctionModule(7, 8, Wr(r, 8));
-		for (let e = 9; e < 15; e++) this.setFunctionModule(14 - e, 8, Wr(r, e));
-		for (let e = 0; e < 8; e++) this.setFunctionModule(this.size - 1 - e, 8, Wr(r, e));
-		for (let e = 8; e < 15; e++) this.setFunctionModule(8, this.size - 15 + e, Wr(r, e));
+		for (let e = 0; e <= 5; e++) this.setFunctionModule(8, e, Jr(r, e));
+		this.setFunctionModule(8, 7, Jr(r, 6)), this.setFunctionModule(8, 8, Jr(r, 7)), this.setFunctionModule(7, 8, Jr(r, 8));
+		for (let e = 9; e < 15; e++) this.setFunctionModule(14 - e, 8, Jr(r, e));
+		for (let e = 0; e < 8; e++) this.setFunctionModule(this.size - 1 - e, 8, Jr(r, e));
+		for (let e = 8; e < 15; e++) this.setFunctionModule(8, this.size - 15 + e, Jr(r, e));
 		this.setFunctionModule(8, this.size - 8, !0);
 	}
 	drawVersion() {
@@ -10379,30 +10404,30 @@ var wr = class {
 		for (let t = 0; t < 12; t++) e = e << 1 ^ (e >>> 11) * 7973;
 		let t = this.version << 12 | e;
 		for (let e = 0; e < 18; e++) {
-			let n = Wr(t, e), r = this.size - 11 + e % 3, i = Math.floor(e / 3);
+			let n = Jr(t, e), r = this.size - 11 + e % 3, i = Math.floor(e / 3);
 			this.setFunctionModule(r, i, n), this.setFunctionModule(i, r, n);
 		}
 	}
 	drawFinderPattern(e, t) {
 		for (let n = -4; n <= 4; n++) for (let r = -4; r <= 4; r++) {
 			let i = Math.max(Math.abs(r), Math.abs(n)), a = e + r, o = t + n;
-			a >= 0 && a < this.size && o >= 0 && o < this.size && this.setFunctionModule(a, o, i !== 2 && i !== 4, Tr.Position);
+			a >= 0 && a < this.size && o >= 0 && o < this.size && this.setFunctionModule(a, o, i !== 2 && i !== 4, kr.Position);
 		}
 	}
 	drawAlignmentPattern(e, t) {
-		for (let n = -2; n <= 2; n++) for (let r = -2; r <= 2; r++) this.setFunctionModule(e + r, t + n, Math.max(Math.abs(r), Math.abs(n)) !== 1, Tr.Alignment);
+		for (let n = -2; n <= 2; n++) for (let r = -2; r <= 2; r++) this.setFunctionModule(e + r, t + n, Math.max(Math.abs(r), Math.abs(n)) !== 1, kr.Alignment);
 	}
-	setFunctionModule(e, t, n, r = Tr.Function) {
+	setFunctionModule(e, t, n, r = kr.Function) {
 		this.modules[t][e] = n, this.types[t][e] = r;
 	}
 	addEccAndInterleave(e) {
 		let t = this.version, n = this.ecc;
-		if (e.length !== ai(t, n)) throw RangeError("Invalid argument");
-		let r = Vr[n[0]][t], i = Br[n[0]][t], a = Math.floor(ii(t) / 8), o = r - a % r, s = Math.floor(a / r), c = [], l = oi(i);
+		if (e.length !== li(t, n)) throw RangeError("Invalid argument");
+		let r = Gr[n[0]][t], i = Wr[n[0]][t], a = Math.floor(ci(t) / 8), o = r - a % r, s = Math.floor(a / r), c = [], l = ui(i);
 		for (let t = 0, n = 0; t < r; t++) {
 			let r = e.slice(n, n + s - i + (t < o ? 0 : 1));
 			n += r.length;
-			let a = si(r, l);
+			let a = di(r, l);
 			t < o && r.push(0), c.push(r.concat(a));
 		}
 		let u = [];
@@ -10412,13 +10437,13 @@ var wr = class {
 		return u;
 	}
 	drawCodewords(e) {
-		if (e.length !== Math.floor(ii(this.version) / 8)) throw RangeError("Invalid argument");
+		if (e.length !== Math.floor(ci(this.version) / 8)) throw RangeError("Invalid argument");
 		let t = 0;
 		for (let n = this.size - 1; n >= 1; n -= 2) {
 			n === 6 && (n = 5);
 			for (let r = 0; r < this.size; r++) for (let i = 0; i < 2; i++) {
 				let a = n - i, o = n + 1 & 2 ? r : this.size - 1 - r;
-				!this.types[o][a] && t < e.length * 8 && (this.modules[o][a] = Wr(e[t >>> 3], 7 - (t & 7)), t++);
+				!this.types[o][a] && t < e.length * 8 && (this.modules[o][a] = Jr(e[t >>> 3], 7 - (t & 7)), t++);
 			}
 		}
 	}
@@ -10468,8 +10493,8 @@ var wr = class {
 				0,
 				0
 			];
-			for (let a = 0; a < this.size; a++) this.modules[t][a] === n ? (r++, r === 5 ? e += Ir : r > 5 && e++) : (this.finderPenaltyAddHistory(r, i), n || (e += this.finderPenaltyCountPatterns(i) * Rr), n = this.modules[t][a], r = 1);
-			e += this.finderPenaltyTerminateAndCount(n, r, i) * Rr;
+			for (let a = 0; a < this.size; a++) this.modules[t][a] === n ? (r++, r === 5 ? e += Br : r > 5 && e++) : (this.finderPenaltyAddHistory(r, i), n || (e += this.finderPenaltyCountPatterns(i) * Hr), n = this.modules[t][a], r = 1);
+			e += this.finderPenaltyTerminateAndCount(n, r, i) * Hr;
 		}
 		for (let t = 0; t < this.size; t++) {
 			let n = !1, r = 0, i = [
@@ -10481,17 +10506,17 @@ var wr = class {
 				0,
 				0
 			];
-			for (let a = 0; a < this.size; a++) this.modules[a][t] === n ? (r++, r === 5 ? e += Ir : r > 5 && e++) : (this.finderPenaltyAddHistory(r, i), n || (e += this.finderPenaltyCountPatterns(i) * Rr), n = this.modules[a][t], r = 1);
-			e += this.finderPenaltyTerminateAndCount(n, r, i) * Rr;
+			for (let a = 0; a < this.size; a++) this.modules[a][t] === n ? (r++, r === 5 ? e += Br : r > 5 && e++) : (this.finderPenaltyAddHistory(r, i), n || (e += this.finderPenaltyCountPatterns(i) * Hr), n = this.modules[a][t], r = 1);
+			e += this.finderPenaltyTerminateAndCount(n, r, i) * Hr;
 		}
 		for (let t = 0; t < this.size - 1; t++) for (let n = 0; n < this.size - 1; n++) {
 			let r = this.modules[t][n];
-			r === this.modules[t][n + 1] && r === this.modules[t + 1][n] && r === this.modules[t + 1][n + 1] && (e += Lr);
+			r === this.modules[t][n + 1] && r === this.modules[t + 1][n] && r === this.modules[t + 1][n + 1] && (e += Vr);
 		}
 		let t = 0;
 		for (let e of this.modules) t = e.reduce((e, t) => e + +!!t, t);
 		let n = this.size * this.size, r = Math.ceil(Math.abs(t * 20 - n * 10) / n) - 1;
-		return e += r * zr, e;
+		return e += r * Ur, e;
 	}
 	getAlignmentPatternPositions() {
 		if (this.version === 1) return [];
@@ -10512,14 +10537,14 @@ var wr = class {
 		t[0] === 0 && (e += this.size), t.pop(), t.unshift(e);
 	}
 };
-function Ur(e, t, n) {
+function qr(e, t, n) {
 	if (t < 0 || t > 31 || e >>> t) throw RangeError("Value out of range");
 	for (let r = t - 1; r >= 0; r--) n.push(e >>> r & 1);
 }
-function Wr(e, t) {
+function Jr(e, t) {
 	return !!(e >>> t & 1);
 }
-var Gr = class {
+var Yr = class {
 	constructor(e, t, n) {
 		if (this.mode = e, this.numChars = t, this.bitData = n, t < 0) throw RangeError("Invalid argument");
 		this.bitData = n.slice();
@@ -10527,74 +10552,74 @@ var Gr = class {
 	getData() {
 		return this.bitData.slice();
 	}
-}, Kr = [
+}, Xr = [
 	1,
 	10,
 	12,
 	14
-], qr = [
+], Zr = [
 	2,
 	9,
 	11,
 	13
-], Jr = [
+], Qr = [
 	4,
 	8,
 	16,
 	16
 ];
-function Yr(e, t) {
+function $r(e, t) {
 	return e[Math.floor((t + 7) / 17) + 1];
 }
-function Xr(e) {
+function ei(e) {
 	let t = [];
-	for (let n of e) Ur(n, 8, t);
-	return new Gr(Jr, e.length, t);
+	for (let n of e) qr(n, 8, t);
+	return new Yr(Qr, e.length, t);
 }
-function Zr(e) {
-	if (!ei(e)) throw RangeError("String contains non-numeric characters");
+function ti(e) {
+	if (!ii(e)) throw RangeError("String contains non-numeric characters");
 	let t = [];
 	for (let n = 0; n < e.length;) {
 		let r = Math.min(e.length - n, 3);
-		Ur(Number.parseInt(e.substring(n, n + r), 10), r * 3 + 1, t), n += r;
+		qr(Number.parseInt(e.substring(n, n + r), 10), r * 3 + 1, t), n += r;
 	}
-	return new Gr(Kr, e.length, t);
+	return new Yr(Xr, e.length, t);
 }
-function Qr(e) {
-	if (!ti(e)) throw RangeError("String contains unencodable characters in alphanumeric mode");
+function ni(e) {
+	if (!ai(e)) throw RangeError("String contains unencodable characters in alphanumeric mode");
 	let t = [], n;
 	for (n = 0; n + 2 <= e.length; n += 2) {
-		let r = Nr.indexOf(e.charAt(n)) * 45;
-		r += Nr.indexOf(e.charAt(n + 1)), Ur(r, 11, t);
+		let r = Lr.indexOf(e.charAt(n)) * 45;
+		r += Lr.indexOf(e.charAt(n + 1)), qr(r, 11, t);
 	}
-	return n < e.length && Ur(Nr.indexOf(e.charAt(n)), 6, t), new Gr(qr, e.length, t);
+	return n < e.length && qr(Lr.indexOf(e.charAt(n)), 6, t), new Yr(Zr, e.length, t);
 }
-function $r(e) {
-	return e === "" ? [] : ei(e) ? [Zr(e)] : ti(e) ? [Qr(e)] : [Xr(ri(e))];
+function ri(e) {
+	return e === "" ? [] : ii(e) ? [ti(e)] : ai(e) ? [ni(e)] : [ei(si(e))];
 }
-function ei(e) {
-	return jr.test(e);
+function ii(e) {
+	return Fr.test(e);
 }
-function ti(e) {
-	return Mr.test(e);
+function ai(e) {
+	return Ir.test(e);
 }
-function ni(e, t) {
+function oi(e, t) {
 	let n = 0;
 	for (let r of e) {
-		let e = Yr(r.mode, t);
+		let e = $r(r.mode, t);
 		if (r.numChars >= 1 << e) return Infinity;
 		n += 4 + e + r.bitData.length;
 	}
 	return n;
 }
-function ri(e) {
+function si(e) {
 	e = encodeURI(e);
 	let t = [];
 	for (let n = 0; n < e.length; n++) e.charAt(n) === "%" ? (t.push(Number.parseInt(e.substring(n + 1, n + 3), 16)), n += 2) : t.push(e.charCodeAt(n));
 	return t;
 }
-function ii(e) {
-	if (e < Pr || e > Fr) throw RangeError("Version number out of range");
+function ci(e) {
+	if (e < Rr || e > zr) throw RangeError("Version number out of range");
 	let t = (16 * e + 128) * e + 64;
 	if (e >= 2) {
 		let n = Math.floor(e / 7) + 2;
@@ -10602,40 +10627,40 @@ function ii(e) {
 	}
 	return t;
 }
-function ai(e, t) {
-	return Math.floor(ii(e) / 8) - Br[t[0]][e] * Vr[t[0]][e];
+function li(e, t) {
+	return Math.floor(ci(e) / 8) - Wr[t[0]][e] * Gr[t[0]][e];
 }
-function oi(e) {
+function ui(e) {
 	if (e < 1 || e > 255) throw RangeError("Degree out of range");
 	let t = [];
 	for (let n = 0; n < e - 1; n++) t.push(0);
 	t.push(1);
 	let n = 1;
 	for (let r = 0; r < e; r++) {
-		for (let e = 0; e < t.length; e++) t[e] = ci(t[e], n), e + 1 < t.length && (t[e] ^= t[e + 1]);
-		n = ci(n, 2);
+		for (let e = 0; e < t.length; e++) t[e] = fi(t[e], n), e + 1 < t.length && (t[e] ^= t[e + 1]);
+		n = fi(n, 2);
 	}
 	return t;
 }
-function si(e, t) {
+function di(e, t) {
 	let n = t.map((e) => 0);
 	for (let r of e) {
 		let e = r ^ n.shift();
-		n.push(0), t.forEach((t, r) => n[r] ^= ci(t, e));
+		n.push(0), t.forEach((t, r) => n[r] ^= fi(t, e));
 	}
 	return n;
 }
-function ci(e, t) {
+function fi(e, t) {
 	if (e >>> 8 || t >>> 8) throw RangeError("Byte out of range");
 	let n = 0;
 	for (let r = 7; r >= 0; r--) n = n << 1 ^ (n >>> 7) * 285, n ^= (t >>> r & 1) * e;
 	return n;
 }
-function li(e, t, n = 1, r = 40, i = -1, a = !0) {
-	if (!(Pr <= n && n <= r && r <= Fr) || i < -1 || i > 7) throw RangeError("Invalid value");
+function pi(e, t, n = 1, r = 40, i = -1, a = !0) {
+	if (!(Rr <= n && n <= r && r <= zr) || i < -1 || i > 7) throw RangeError("Invalid value");
 	let o, s;
 	for (o = n;; o++) {
-		let n = ai(o, t) * 8, i = ni(e, o);
+		let n = li(o, t) * 8, i = oi(e, o);
 		if (i <= n) {
 			s = i;
 			break;
@@ -10643,25 +10668,25 @@ function li(e, t, n = 1, r = 40, i = -1, a = !0) {
 		if (o >= r) throw RangeError("Data too long");
 	}
 	for (let e of [
-		Dr,
-		Or,
-		kr
-	]) a && s <= ai(o, e) * 8 && (t = e);
+		jr,
+		Mr,
+		Nr
+	]) a && s <= li(o, e) * 8 && (t = e);
 	let c = [];
 	for (let t of e) {
-		Ur(t.mode[0], 4, c), Ur(t.numChars, Yr(t.mode, o), c);
+		qr(t.mode[0], 4, c), qr(t.numChars, $r(t.mode, o), c);
 		for (let e of t.getData()) c.push(e);
 	}
-	let l = ai(o, t) * 8;
-	Ur(0, Math.min(4, l - c.length), c), Ur(0, (8 - c.length % 8) % 8, c);
-	for (let e = 236; c.length < l; e ^= 253) Ur(e, 8, c);
+	let l = li(o, t) * 8;
+	qr(0, Math.min(4, l - c.length), c), qr(0, (8 - c.length % 8) % 8, c);
+	for (let e = 236; c.length < l; e ^= 253) qr(e, 8, c);
 	let u = Array.from({ length: Math.ceil(c.length / 8) }, () => 0);
-	return c.forEach((e, t) => u[t >>> 3] |= e << 7 - (t & 7)), new Hr(o, t, u, i);
+	return c.forEach((e, t) => u[t >>> 3] |= e << 7 - (t & 7)), new Kr(o, t, u, i);
 }
-function ui(e, t) {
-	let { ecc: n = "L", boostEcc: r = !1, minVersion: i = 1, maxVersion: a = 40, maskPattern: o = -1, border: s = 1 } = t || {}, c = typeof e == "string" ? $r(e) : Array.isArray(e) ? [Xr(e)] : void 0;
+function mi(e, t) {
+	let { ecc: n = "L", boostEcc: r = !1, minVersion: i = 1, maxVersion: a = 40, maskPattern: o = -1, border: s = 1 } = t || {}, c = typeof e == "string" ? ri(e) : Array.isArray(e) ? [ei(e)] : void 0;
 	if (!c) throw Error(`uqr only supports encoding string and binary data, but got: ${typeof e}`);
-	let l = li(c, Ar[n], i, a, o, r), u = di({
+	let l = pi(c, Pr[n], i, a, o, r), u = hi({
 		version: l.version,
 		maskPattern: l.mask,
 		size: l.size,
@@ -10670,26 +10695,26 @@ function ui(e, t) {
 	}, s);
 	return t?.invert && (u.data = u.data.map((e) => e.map((e) => !e))), t?.onEncoded?.(u), u;
 }
-function di(e, t = 1) {
+function hi(e, t = 1) {
 	if (!t) return e;
 	let { size: n } = e, r = n + t * 2;
 	e.size = r, e.data.forEach((e) => {
 		for (let n = 0; n < t; n++) e.unshift(!1), e.push(!1);
 	});
 	for (let n = 0; n < t; n++) e.data.unshift(Array.from({ length: r }, (e) => !1)), e.data.push(Array.from({ length: r }, (e) => !1));
-	let i = Tr.Border;
+	let i = kr.Border;
 	e.types.forEach((e) => {
 		for (let n = 0; n < t; n++) e.unshift(i), e.push(i);
 	});
 	for (let n = 0; n < t; n++) e.types.unshift(Array.from({ length: r }, (e) => i)), e.types.push(Array.from({ length: r }, (e) => i));
 	return e;
 }
-function fi(e) {
+function gi(e) {
 	let t = e.toUpperCase();
 	return t.toLowerCase() === e ? t : e;
 }
-function pi(e, t) {
-	let n = ui(typeof e == "string" ? fi(e) : [...e], {
+function _i(e, t) {
+	let n = mi(typeof e == "string" ? gi(e) : [...e], {
 		ecc: t?.eccLevel ?? "L",
 		maxVersion: t?.maxVersion ?? 40,
 		border: 0
@@ -10700,7 +10725,7 @@ function pi(e, t) {
 		version: n.version
 	};
 }
-function mi(e, t) {
+function vi(e, t) {
 	let n = t?.moduleSizePx ?? 4, r = Math.max(t?.quietZoneModules ?? 4, 4), i = e.length, a = (i + r * 2) * n, o = new Uint8ClampedArray(a * a * 4).fill(255);
 	for (let t = 0; t < i; t++) for (let s = 0; s < i; s++) {
 		if (!e[t][s]) continue;
@@ -10721,8 +10746,8 @@ function mi(e, t) {
 }
 //#endregion
 //#region src/backends/qr-lt/render.ts
-function hi(e, t, n) {
-	let { modules: r } = pi(e, n), { data: i, width: a, height: o } = mi(r, n);
+function yi(e, t, n) {
+	let { modules: r } = _i(e, n), { data: i, width: a, height: o } = vi(r, n);
 	t.width = a, t.height = o;
 	let s = t.getContext("2d");
 	if (!s) throw Error("renderQrToCanvas: failed to acquire a 2D rendering context");
@@ -10730,9 +10755,9 @@ function hi(e, t, n) {
 }
 //#endregion
 //#region src/backends/qr-lt/index.ts
-var gi = class {
+var bi = class {
 	constructor() {
-		this.decoder = new wr();
+		this.decoder = new Or();
 	}
 	addFrame(e) {
 		this.decoder.receivePart(e);
@@ -10743,21 +10768,27 @@ var gi = class {
 	get progress() {
 		return this.decoder.progress;
 	}
+	get totalBytes() {
+		return this.decoder.totalBytes;
+	}
+	get bytesReceived() {
+		return this.decoder.bytesReceived;
+	}
 	getResult() {
 		return this.decoder.getResult();
 	}
-}, _i = {
+}, xi = {
 	id: "qr-lt",
 	encode(e, t) {
-		return Cr(e, t);
+		return Dr(e, t);
 	},
 	createDecoder() {
-		return new gi();
+		return new bi();
 	}
 };
 //#endregion
 //#region src/codec/transfer.ts
-async function vi(e, t, n) {
+async function Si(e, t, n) {
 	let r = await _e(e), i = !1, a = e;
 	if (!n?.skipCompression) {
 		let t = de(e);
@@ -10771,12 +10802,12 @@ async function vi(e, t, n) {
 		compressed: i
 	}, a);
 }
-async function yi(e, t, n) {
-	let r = n?.backend ?? _i, i = await vi(e, t, { skipCompression: r.compressesInternally });
+async function Ci(e, t, n) {
+	let r = n?.backend ?? xi, i = await Si(e, t, { skipCompression: r.compressesInternally });
 	return r.encode(i, n?.backendOptions ?? { maxFragmentLength: n?.maxFragmentLength });
 }
-var bi = class {
-	constructor(e = _i) {
+var wi = class {
+	constructor(e = xi) {
 		this.decoder = e.createDecoder();
 	}
 	receivePart(e) {
@@ -10788,11 +10819,17 @@ var bi = class {
 	get progress() {
 		return this.decoder.progress ?? 0;
 	}
+	get totalBytes() {
+		return this.decoder.totalBytes;
+	}
+	get bytesReceived() {
+		return this.decoder.bytesReceived ?? 0;
+	}
 	async getResult() {
-		return xi(this.decoder.getResult());
+		return Ti(this.decoder.getResult());
 	}
 };
-async function xi(e) {
+async function Ti(e) {
 	let { meta: t, payload: n } = he(e), r = t.compressed ? fe(n) : new Uint8Array(n), i = await _e(r);
 	if (i !== t.sha256) throw new ge(`Checksum mismatch: expected ${t.sha256}, got ${i}`);
 	return {
@@ -10803,7 +10840,7 @@ async function xi(e) {
 }
 //#endregion
 //#region src/scan/camera.ts
-var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
+var Ei = 1920, Di = 1080, Oi = 120, ki = class e {
 	constructor(t) {
 		this.pumpRunning = !1, this.ownsVideoElement = t === void 0, this.video = t ?? e.createHiddenVideoElement(), this.canvas = document.createElement("canvas");
 		let n = this.canvas.getContext("2d", { willReadFrequently: !0 });
@@ -10817,8 +10854,8 @@ var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
 	async start(e) {
 		let t = {
 			facingMode: e?.facingMode ?? "environment",
-			width: { ideal: e?.width ?? Si },
-			height: { ideal: e?.height ?? Ci },
+			width: { ideal: e?.width ?? Ei },
+			height: { ideal: e?.height ?? Di },
 			aspectRatio: matchMedia("all and (orientation: landscape)").matches ? 16 / 9 : 9 / 16,
 			frameRate: { ideal: 30 }
 		};
@@ -10868,7 +10905,7 @@ var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
 		if (!this.frameReader) return;
 		let e;
 		try {
-			if (e = await this.takeLatestFrame(wi), e) {
+			if (e = await this.takeLatestFrame(Oi), e) {
 				let t = await this.videoFrameToNativeFrame(e);
 				if (t) return t;
 				this.disableNativeCapture();
@@ -10923,7 +10960,7 @@ var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
 		let n = e.visibleRect;
 		if (!n) return;
 		let { width: r, height: i } = n, a = new Uint8Array(e.allocationSize());
-		if (Ei(await e.copyTo(a), r, i, t)) return {
+		if (Ai(await e.copyTo(a), r, i, t)) return {
 			data: a,
 			width: r,
 			height: i,
@@ -10931,7 +10968,7 @@ var Si = 1920, Ci = 1080, wi = 120, Ti = class e {
 		};
 	}
 };
-function Ei(e, t, n, r) {
+function Ai(e, t, n, r) {
 	let i = Math.ceil(t / 2), a = Math.ceil(n / 2);
 	if (r === "nv12") {
 		if (e.length !== 2) return !1;
@@ -10944,7 +10981,7 @@ function Ei(e, t, n, r) {
 }
 //#endregion
 //#region src/scan/worker-pool.ts
-var Di = class {
+var ji = class {
 	constructor(e, t) {
 		let n = Math.max(1, Math.floor(e));
 		this.slots = Array.from({ length: n }, () => ({
@@ -10969,7 +11006,7 @@ var Di = class {
 	forEach(e) {
 		for (let t of this.slots) e(t.worker);
 	}
-}, Oi = 20, ki = 1, Ai = class {
+}, Mi = 20, Ni = 1, Pi = class {
 	constructor() {
 		this.nextRequestId = 0, this.captureInFlight = !1, this.samplingGeneration = 0, this.decodeBytes = !1, this.callbacks = /* @__PURE__ */ new Set();
 	}
@@ -10980,11 +11017,11 @@ var Di = class {
 		return this.camera?.resolution;
 	}
 	async start(e, t) {
-		this.stop(), this.camera = new Ti(e), await this.camera.start(t);
-		let n = t?.scanHz ?? Oi;
+		this.stop(), this.camera = new ki(e), await this.camera.start(t);
+		let n = t?.scanHz ?? Mi;
 		this.decodeBytes = t?.decodeBytes ?? !1;
-		let r = Math.max(1, Math.floor(t?.decodeWorkers ?? ki));
-		this.pool = new Di(r, () => this.createDecodeWorker()), this.startSampling(() => this.tick(), n);
+		let r = Math.max(1, Math.floor(t?.decodeWorkers ?? Ni));
+		this.pool = new ji(r, () => this.createDecodeWorker()), this.startSampling(() => this.tick(), n);
 	}
 	createDecodeWorker() {
 		let e = new Worker(new URL(
@@ -11053,7 +11090,7 @@ var Di = class {
 			this.captureInFlight = !1, console.warn("[screenferry] frame capture failed:", e);
 		}
 	}
-}, ji = class {
+}, Fi = class {
 	constructor(e = 2e3) {
 		this.timestamps = [], this.windowMs = e;
 	}
@@ -11070,24 +11107,52 @@ var Di = class {
 	reset() {
 		this.timestamps = [];
 	}
-}, Mi = /* @__PURE__ */ u(gr(), 1), Ni = /* @__PURE__ */ u(yr(), 1);
-function Pi(e) {
+}, Ii = 2e3, Li = class {
+	constructor(e = Ii) {
+		this.samples = [], this.startedAt = 0, this.windowMs = e;
+	}
+	start(e = Date.now()) {
+		this.startedAt = e, this.samples = [];
+	}
+	sample(e, t, n = Date.now()) {
+		return this.samples.push({
+			at: n,
+			bytes: e
+		}), this.trim(n), {
+			bytesReceived: e,
+			totalBytes: t ?? null,
+			bytesPerSecond: this.bytesPerSecond,
+			elapsedMs: Math.max(0, n - this.startedAt)
+		};
+	}
+	get bytesPerSecond() {
+		if (this.samples.length < 2) return 0;
+		let e = this.samples[0], t = this.samples[this.samples.length - 1], n = t.at - e.at;
+		return n <= 0 ? 0 : (t.bytes - e.bytes) / n * 1e3;
+	}
+	trim(e) {
+		let t = e - this.windowMs, n = 0;
+		for (; n + 1 < this.samples.length && this.samples[n + 1].at <= t;) n++;
+		n > 0 && this.samples.splice(0, n);
+	}
+}, Ri = /* @__PURE__ */ u(gr(), 1), zi = /* @__PURE__ */ u(yr(), 1);
+function Bi(e) {
 	return e.default ?? e;
 }
-var Fi = Pi(Mi.default), Ii = Pi(Ni.default), Li = 2931;
-async function* Ri(e, t) {
-	let n = new Fi(Buffer.from(e), t?.maxFragmentLength ?? Li);
+var Vi = Bi(Ri.default), Hi = Bi(zi.default), Ui = 2931;
+async function* Wi(e, t) {
+	let n = new Vi(Buffer.from(e), t?.maxFragmentLength ?? Ui);
 	for (;;) {
 		let e = n.nextPart();
 		yield new Uint8Array(e.cbor());
 	}
 }
-var zi = class {
+var Gi = class {
 	constructor() {
-		this.decoder = new Ii();
+		this.decoder = new Hi();
 	}
 	receivePart(e) {
-		let t = Mi.FountainEncoderPart.fromCBOR(Buffer.from(e.buffer, e.byteOffset, e.byteLength));
+		let t = Ri.FountainEncoderPart.fromCBOR(Buffer.from(e.buffer, e.byteOffset, e.byteLength));
 		this.decoder.receivePart(t);
 	}
 	isComplete() {
@@ -11096,14 +11161,20 @@ var zi = class {
 	get progress() {
 		return this.decoder.estimatedPercentComplete();
 	}
+	get totalBytes() {
+		return Sr(this.decoder);
+	}
+	get bytesReceived() {
+		return this.isComplete() ? this.totalBytes ?? 0 : Tr(this.totalBytes, this.decoder.expectedPartCount(), this.decoder.getReceivedPartIndexes().length);
+	}
 	getResult() {
 		if (!this.decoder.isComplete()) throw Error("FountainByteDecoder: cannot get result before decoding is complete");
 		if (!this.decoder.isSuccess()) throw Error(`FountainByteDecoder: decode failed: ${this.decoder.resultError()}`);
 		return new Uint8Array(this.decoder.resultMessage());
 	}
-}, Bi = class {
+}, Ki = class {
 	constructor() {
-		this.decoder = new zi();
+		this.decoder = new Gi();
 	}
 	addFrame(e) {
 		this.decoder.receivePart(e);
@@ -11114,42 +11185,48 @@ var zi = class {
 	get progress() {
 		return this.decoder.progress;
 	}
+	get totalBytes() {
+		return this.decoder.totalBytes;
+	}
+	get bytesReceived() {
+		return this.decoder.bytesReceived;
+	}
 	getResult() {
 		return this.decoder.getResult();
 	}
-}, Vi = {
+}, qi = {
 	id: "qr-bin-lt",
 	encode(e, t) {
-		return Ri(e, t);
+		return Wi(e, t);
 	},
 	createDecoder() {
-		return new Bi();
+		return new Ki();
 	}
-}, Hi = {
-	"qr-lt": _i,
-	"qr-bin-lt": Vi
-}, Ui = "sf1:backend=";
-function Wi(e) {
-	return `${Ui}${e}`;
+}, Ji = {
+	"qr-lt": xi,
+	"qr-bin-lt": qi
+}, Yi = "sf1:backend=";
+function Xi(e) {
+	return `${Yi}${e}`;
 }
-function Gi(e) {
+function Zi(e) {
 	let t = (typeof e == "string" ? e : new TextDecoder().decode(e)).toLowerCase();
-	if (t.startsWith(Ui)) return t.slice(12);
+	if (t.startsWith(Yi)) return t.slice(12);
 }
-function Ki(e) {
-	return Object.prototype.hasOwnProperty.call(Hi, e) ? Hi[e] : void 0;
+function Qi(e) {
+	return Object.prototype.hasOwnProperty.call(Ji, e) ? Ji[e] : void 0;
 }
-function qi(e) {
-	return e === Vi.id ? { decodeBytes: !0 } : {};
+function $i(e) {
+	return e === qi.id ? { decodeBytes: !0 } : {};
 }
-async function Ji(e) {
-	return e === "qr-bin-lt" ? Vi : _i;
+async function ea(e) {
+	return e === "qr-bin-lt" ? qi : xi;
 }
 //#endregion
 //#region src/backends/display-driver.ts
-var Yi = 10, Xi = class {
+var ta = 10, na = class {
 	constructor(e, t, n) {
-		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? Yi, this.onFrameSent = n?.onFrameSent;
+		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? ta, this.onFrameSent = n?.onFrameSent;
 	}
 	start() {
 		this.running || (this.running = !0, this.iterator = this.source[Symbol.asyncIterator](), this.lastFrameTime = 0, this.visibilityListener = () => {
@@ -11176,14 +11253,14 @@ var Yi = 10, Xi = class {
 	async renderNextFrame() {
 		if (!this.iterator) return;
 		let { value: e, done: t } = await this.iterator.next();
-		t || e === void 0 || !this.running || (hi(e, this.canvas, this.opts), this.onFrameSent?.(this.frameIndex), this.frameIndex++);
+		t || e === void 0 || !this.running || (yi(e, this.canvas, this.opts), this.onFrameSent?.(this.frameIndex), this.frameIndex++);
 	}
-}, Zi = 10;
-function Qi(e) {
+}, ra = 10;
+function ia(e) {
 	return "preferredBackend" in e;
 }
-async function* $i(e, t, n) {
-	let r = e[Symbol.asyncIterator](), i = Wi(t), a = 0;
+async function* aa(e, t, n) {
+	let r = e[Symbol.asyncIterator](), i = Xi(t), a = 0;
 	for (;;) {
 		a % n === 0 && (yield i);
 		let { value: e, done: t } = await r.next();
@@ -11191,21 +11268,21 @@ async function* $i(e, t, n) {
 		yield e, a++;
 	}
 }
-async function* ea(e, t) {
+async function* oa(e, t) {
 	let n = new Uint8Array(await e.arrayBuffer()), r = "name" in e && typeof e.name == "string" ? e.name : "file", i = e.type || "application/octet-stream";
-	if (t && Qi(t)) {
-		let e = await Ji(t.preferredBackend), a = await yi(n, {
+	if (t && ia(t)) {
+		let e = await ea(t.preferredBackend), a = await Ci(n, {
 			filename: r,
 			mimeType: i
 		}, {
 			maxFragmentLength: t.fragmentSize,
 			backend: e,
 			backendOptions: t.backendOptions
-		}), o = Math.max(1, t.headerIntervalFrames ?? Zi);
-		yield* $i(a, e.id, o);
+		}), o = Math.max(1, t.headerIntervalFrames ?? ra);
+		yield* aa(a, e.id, o);
 		return;
 	}
-	yield* await yi(n, {
+	yield* await Ci(n, {
 		filename: r,
 		mimeType: i
 	}, {
@@ -11214,9 +11291,9 @@ async function* ea(e, t) {
 		backendOptions: t?.backendOptions
 	});
 }
-var ta = class {
+var sa = class {
 	constructor(e) {
-		this.decoder = new bi(e);
+		this.decoder = new wi(e);
 	}
 	addFrame(e) {
 		this.decoder.receivePart(e);
@@ -11227,16 +11304,22 @@ var ta = class {
 	get isComplete() {
 		return this.decoder.isComplete();
 	}
+	get totalBytes() {
+		return this.decoder.totalBytes;
+	}
+	get bytesReceived() {
+		return this.decoder.bytesReceived;
+	}
 	async getResult() {
 		let { filename: e, mimeType: t, bytes: n } = await this.decoder.getResult();
 		return new File([n], e, { type: t });
 	}
-}, na = class {
+}, ca = class {
 	constructor(e = {}, t) {
-		this.scanner = new Ai(), this.goodputTracker = new ji(), this.settled = !1, this.callbacks = e, this.decoder = new ta(t);
+		this.scanner = new Pi(), this.goodputTracker = new Fi(), this.metricsTracker = new Li(), this.settled = !1, this.callbacks = e, this.decoder = new sa(t);
 	}
 	async start(e, t) {
-		this.settled = !1, this.goodputTracker.reset(), this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, t);
+		this.settled = !1, this.goodputTracker.reset(), this.metricsTracker.start(), this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, t);
 	}
 	stop() {
 		this.unsubscribe?.(), this.unsubscribe = void 0, this.scanner.stop();
@@ -11254,14 +11337,14 @@ var ta = class {
 			} catch {
 				return;
 			}
-			this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
+			this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), this.callbacks.onMetrics && this.callbacks.onMetrics(this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes)), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
 				this.stop(), this.callbacks.onComplete?.(e);
 			}).catch((e) => {
 				this.stop(), this.callbacks.onError?.(e);
 			}));
 		}
 	}
-}, ra = class {
+}, la = class {
 	constructor(e = {}) {
 		this.callbacks = e;
 	}
@@ -11274,15 +11357,21 @@ var ta = class {
 	get isComplete() {
 		return this.decoder?.isComplete ?? !1;
 	}
+	get totalBytes() {
+		return this.decoder?.totalBytes;
+	}
+	get bytesReceived() {
+		return this.decoder?.bytesReceived ?? 0;
+	}
 	addFrame(e) {
-		let t = Gi(e);
+		let t = Zi(e);
 		if (t !== void 0) {
 			this.resolvedBackendId || this.resolve(t);
 			return;
 		}
 		if (!this.resolvedBackendId) {
 			if (typeof e != "string") return;
-			this.resolve(_i.id);
+			this.resolve(xi.id);
 		}
 		this.decoder?.addFrame(e);
 	}
@@ -11291,17 +11380,17 @@ var ta = class {
 		return this.decoder.getResult();
 	}
 	resolve(e) {
-		let t = Ki(e);
-		t && (this.resolvedBackendId = e, this.decoder = new ta(t), this.callbacks.onBackendResolved?.(e));
+		let t = Qi(e);
+		t && (this.resolvedBackendId = e, this.decoder = new sa(t), this.callbacks.onBackendResolved?.(e));
 	}
-}, ia = class {
+}, ua = class {
 	constructor(e = {}) {
-		this.scanner = new Ai(), this.goodputTracker = new ji(), this.settled = !1, this.callbacks = e, this.decoder = new ra({ onBackendResolved: (e) => {
-			this.callbacks.onBackendResolved?.(e), e !== _i.id && this.switchCaptureMode(e);
+		this.scanner = new Pi(), this.goodputTracker = new Fi(), this.metricsTracker = new Li(), this.settled = !1, this.callbacks = e, this.decoder = new la({ onBackendResolved: (e) => {
+			this.callbacks.onBackendResolved?.(e), e !== xi.id && this.switchCaptureMode(e);
 		} });
 	}
 	async start(e, t) {
-		this.settled = !1, this.goodputTracker.reset(), this.videoElement = e, this.scannerOpts = t, this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, {
+		this.settled = !1, this.goodputTracker.reset(), this.metricsTracker.start(), this.videoElement = e, this.scannerOpts = t, this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, {
 			...t,
 			decodeBytes: !1
 		});
@@ -11322,7 +11411,7 @@ var ta = class {
 			} catch {
 				return;
 			}
-			this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
+			this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), this.callbacks.onMetrics && this.callbacks.onMetrics(this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes)), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
 				this.stop(), this.callbacks.onComplete?.(e);
 			}).catch((e) => {
 				this.stop(), this.callbacks.onError?.(e);
@@ -11334,7 +11423,7 @@ var ta = class {
 		try {
 			await this.scanner.start(this.videoElement, {
 				...this.scannerOpts,
-				...qi(e)
+				...$i(e)
 			});
 		} catch (e) {
 			this.callbacks.onError?.(e);
@@ -11342,6 +11431,6 @@ var ta = class {
 	}
 };
 //#endregion
-export { Ti as Camera, Xi as DisplayDriver, ge as IntegrityError, ia as NegotiatingReceiverSession, ra as NegotiatingStreamDecoder, na as ReceiverSession, Ai as Scanner, ta as StreamDecoder, ea as encodeToFrames, Vi as qrBinLtBackend, _i as qrLtBackend, Ji as resolvePreferredBackend };
+export { ki as Camera, na as DisplayDriver, ge as IntegrityError, ua as NegotiatingReceiverSession, la as NegotiatingStreamDecoder, ca as ReceiverSession, Pi as Scanner, sa as StreamDecoder, oa as encodeToFrames, qi as qrBinLtBackend, xi as qrLtBackend, ea as resolvePreferredBackend };
 
 //# sourceMappingURL=index.js.map

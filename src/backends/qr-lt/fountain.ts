@@ -1,6 +1,12 @@
 // Must be imported before `@ngraveio/bc-ur` — see src/env/polyfills.ts for why.
 import '../../env/polyfills';
 import { UR, UREncoder, URDecoder } from '@ngraveio/bc-ur';
+import {
+  innerFountainDecoder,
+  readExpectedMessageLength,
+  recoveredByteCount,
+  singlePartMessageLength,
+} from '../fountain-bytes';
 
 /**
  * Fragment length (bytes) used when the caller doesn't specify one.
@@ -65,6 +71,39 @@ export class FountainDecoder {
    */
   get progress(): number {
     return this.decoder.estimatedPercentComplete();
+  }
+
+  /**
+   * Total bytes this stream is carrying, announced by every fountain part's
+   * header — `undefined` until the first part is accepted.
+   *
+   * These are *wire* bytes: the envelope (gzipped payload plus metadata
+   * header), as bc-ur frames it — `UR.fromBuffer` CBOR-wraps the envelope
+   * before fountain-encoding, so this runs a few bytes over the envelope's
+   * own length. Not the original file's size, which is only readable once
+   * the envelope is reassembled and decompressed.
+   */
+  get totalBytes(): number | undefined {
+    return (
+      readExpectedMessageLength(innerFountainDecoder(this.decoder)) ??
+      singlePartMessageLength(this.decoder)
+    );
+  }
+
+  /**
+   * Envelope bytes recovered so far — see `recoveredByteCount`, which is
+   * accurate to within one fragment. Once complete, everything arrived by
+   * definition, so report the total exactly rather than that rounding (and
+   * so a single-part transfer, which never populates the fragment counts at
+   * all, still reports its bytes).
+   */
+  get bytesReceived(): number {
+    if (this.isComplete()) return this.totalBytes ?? 0;
+    return recoveredByteCount(
+      this.totalBytes,
+      this.decoder.expectedPartCount(),
+      this.decoder.receivedPartIndexes().length,
+    );
   }
 
   /** Envelope-encoded bytes — not yet decompressed or checksum-verified. */

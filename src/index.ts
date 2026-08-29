@@ -1,6 +1,7 @@
 import { encodeFileToParts, TransferDecoder } from './codec/transfer';
 import { Scanner, type ScannerOptions } from './scan/index';
 import { GoodputTracker } from './scan/goodput';
+import { TransferMetricsTracker, type TransferMetrics } from './scan/metrics';
 import type { Frame, TransferBackend } from './backends/types';
 import {
   backendForId,
@@ -145,6 +146,8 @@ export type { ScannerOptions, CameraOptions } from './scan/index';
 
 export { IntegrityError } from './codec/errors';
 
+export type { TransferMetrics } from './scan/metrics';
+
 /**
  * Reassembles fountain-encoded UR part strings (from any source — camera
  * scan, screen-share frame, a test harness) back into the original file.
@@ -173,6 +176,20 @@ export class StreamDecoder<F extends Frame = string> {
   }
 
   /**
+   * Total envelope bytes the sender is transmitting — `undefined` until the
+   * first accepted frame announces it. Wire bytes, not the reconstructed
+   * file's size; see `TransferMetrics`.
+   */
+  get totalBytes(): number | undefined {
+    return this.decoder.totalBytes;
+  }
+
+  /** Envelope bytes recovered so far. Monotonic; see `TransferMetrics`. */
+  get bytesReceived(): number {
+    return this.decoder.bytesReceived;
+  }
+
+  /**
    * Resolves to a `File` (a `Blob` with the envelope's recovered `name`) so
    * callers can trigger a real download without a separate filename
    * channel — e.g. `URL.createObjectURL(file)` + `<a download>`.
@@ -189,6 +206,15 @@ export class StreamDecoder<F extends Frame = string> {
 export interface ReceiverSessionCallbacks {
   /** Called after every frame that advances decode progress. */
   onProgress?: (progress: number) => void;
+  /**
+   * Wall-clock throughput, fired alongside every `onProgress`. Separate
+   * from `onProgress` on purpose: that one reports the fountain decoder's
+   * completion *estimate*, this one reports real bytes over real time —
+   * see `TransferMetrics`. The last event before `onComplete` carries the
+   * transfer's final elapsed time, so there's no separate "how long did
+   * that take" callback to wait for.
+   */
+  onMetrics?: (metrics: TransferMetrics) => void;
   onComplete?: (file: Blob) => void;
   /** Includes `IntegrityError` on checksum failure — see `StreamDecoder`. */
   onError?: (error: unknown) => void;
@@ -210,6 +236,7 @@ export class ReceiverSession<F extends Frame = string> {
   private readonly decoder: StreamDecoder<F>;
   private readonly callbacks: ReceiverSessionCallbacks;
   private readonly goodputTracker = new GoodputTracker();
+  private readonly metricsTracker = new TransferMetricsTracker();
   private unsubscribe: (() => void) | undefined;
   private settled = false;
 
@@ -221,6 +248,7 @@ export class ReceiverSession<F extends Frame = string> {
   async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
     this.settled = false;
     this.goodputTracker.reset();
+    this.metricsTracker.start();
     this.unsubscribe = this.scanner.onDecode((frame) => this.handleFrame(frame as F));
     await this.scanner.start(videoElement, opts);
   }
@@ -254,6 +282,11 @@ export class ReceiverSession<F extends Frame = string> {
 
     this.goodputTracker.record();
     this.callbacks.onProgress?.(this.decoder.progress);
+    if (this.callbacks.onMetrics) {
+      this.callbacks.onMetrics(
+        this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes),
+      );
+    }
 
     if (this.decoder.isComplete) {
       this.settled = true;
@@ -305,6 +338,16 @@ export class NegotiatingStreamDecoder {
 
   get isComplete(): boolean {
     return this.decoder?.isComplete ?? false;
+  }
+
+  /** See `StreamDecoder.totalBytes` — `undefined` until a backend is resolved and its first frame accepted. */
+  get totalBytes(): number | undefined {
+    return this.decoder?.totalBytes;
+  }
+
+  /** See `StreamDecoder.bytesReceived` — `0` until a backend is resolved. */
+  get bytesReceived(): number {
+    return this.decoder?.bytesReceived ?? 0;
   }
 
   addFrame(frame: Frame): void {
@@ -370,6 +413,7 @@ export class NegotiatingReceiverSession {
   private readonly decoder: NegotiatingStreamDecoder;
   private readonly callbacks: NegotiatingReceiverSessionCallbacks;
   private readonly goodputTracker = new GoodputTracker();
+  private readonly metricsTracker = new TransferMetricsTracker();
   private unsubscribe: (() => void) | undefined;
   private settled = false;
   private videoElement: HTMLVideoElement | undefined;
@@ -388,6 +432,7 @@ export class NegotiatingReceiverSession {
   async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
     this.settled = false;
     this.goodputTracker.reset();
+    this.metricsTracker.start();
     this.videoElement = videoElement;
     this.scannerOpts = opts;
     this.unsubscribe = this.scanner.onDecode((frame) => this.handleFrame(frame));
@@ -423,6 +468,11 @@ export class NegotiatingReceiverSession {
 
     this.goodputTracker.record();
     this.callbacks.onProgress?.(this.decoder.progress);
+    if (this.callbacks.onMetrics) {
+      this.callbacks.onMetrics(
+        this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes),
+      );
+    }
 
     if (this.decoder.isComplete) {
       this.settled = true;

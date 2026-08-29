@@ -46,7 +46,8 @@
         resize: both;
         overflow: hidden;
       }
-      #live-recv-resolution {
+      #live-recv-resolution,
+      .metrics {
         font-family: monospace;
         color: #666;
         margin: 0.25rem 0 0;
@@ -143,6 +144,7 @@
         </div>
       </div>
       <progress id="self-test-progress" value="0" max="1"></progress>
+      <p class="metrics" id="self-test-metrics"></p>
       <pre id="status">idle</pre>
       <p><a id="self-test-download" style="display: none">Download reconstructed file</a></p>
     </section>
@@ -184,6 +186,7 @@
         <button id="live-recv-stop">Stop</button>
       </p>
       <progress id="live-recv-progress" value="0" max="1"></progress>
+      <p class="metrics" id="live-recv-metrics"></p>
       <pre id="live-recv-status">idle</pre>
       <p><a id="live-recv-download" style="display: none">Download reconstructed file</a></p>
     </section>
@@ -254,6 +257,38 @@
         return { fps, fragmentSize, scanHz, decodeWorkers };
       }
 
+      // Renders `onMetrics` as a one-line "X KB/s — N.N KB of M.M KB —
+      // 12s elapsed, ~8s left" readout. Remaining time comes from the
+      // rolling-window rate rather than the cumulative average, so it
+      // reacts to what you just changed (moving the camera, a different
+      // backend) instead of being anchored to the whole transfer's history.
+      function formatMetrics(m) {
+        const kb = (bytes) => (bytes / 1024).toFixed(1);
+        const seconds = (ms) => `${(ms / 1000).toFixed(0)}s`;
+
+        const parts = [`${kb(m.bytesPerSecond)} KB/s`];
+        parts.push(m.totalBytes ? `${kb(m.bytesReceived)} of ${kb(m.totalBytes)} KB` : 'sizing...');
+
+        let time = `${seconds(m.elapsedMs)} elapsed`;
+        if (m.totalBytes && m.bytesPerSecond > 0) {
+          const remainingMs = ((m.totalBytes - m.bytesReceived) / m.bytesPerSecond) * 1000;
+          time += `, ~${seconds(remainingMs)} left`;
+        }
+        parts.push(time);
+
+        return parts.join(' — ');
+      }
+
+      // The one-time summary: cumulative bytes over wall-clock time, which
+      // is the honest figure for "this transfer took N seconds at M KB/s"
+      // (see TransferMetrics.bytesPerSecond on why the live number isn't).
+      function formatFinalMetrics(m) {
+        if (!m) return '';
+        const seconds = (m.elapsedMs / 1000).toFixed(1);
+        const average = m.elapsedMs > 0 ? m.bytesReceived / 1024 / (m.elapsedMs / 1000) : 0;
+        return `${seconds}s at ${average.toFixed(1)} KB/s average`;
+      }
+
       function defaultSampleFile(label) {
         const text = `screenferry test app (${label}) — sample payload\n`.repeat(50);
         return new File([text], `${label}.txt`, { type: 'text/plain' });
@@ -266,7 +301,9 @@
         const cameraCtx = cameraCanvas.getContext('2d');
         const status = document.getElementById('status');
         const progress = document.getElementById('self-test-progress');
+        const metricsEl = document.getElementById('self-test-metrics');
         const downloadLink = document.getElementById('self-test-download');
+        let lastMetrics;
 
         let mirrorHandle;
         function startMirroring() {
@@ -286,6 +323,8 @@
         document.getElementById('self-test-start').addEventListener('click', async () => {
           downloadLink.style.display = 'none';
           progress.value = 0;
+          metricsEl.textContent = '';
+          lastMetrics = undefined;
 
           const backend = selectedBackend();
           const file =
@@ -323,8 +362,12 @@
               const goodput = session.goodput;
               status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
+            onMetrics: (m) => {
+              lastMetrics = m;
+              metricsEl.textContent = formatMetrics(m);
+            },
             onComplete: (resultFile) => {
-              status.textContent = `done: "${resultFile.name}" (${resultFile.size} bytes) via ${backend}`;
+              status.textContent = `done: "${resultFile.name}" (${resultFile.size} bytes) via ${backend} — ${formatFinalMetrics(lastMetrics)}`;
               cleanup();
 
               const url = URL.createObjectURL(resultFile);
@@ -386,9 +429,11 @@
         const video = document.getElementById('live-recv-video');
         const status = document.getElementById('live-recv-status');
         const progress = document.getElementById('live-recv-progress');
+        const metricsEl = document.getElementById('live-recv-metrics');
         const downloadLink = document.getElementById('live-recv-download');
         const resolutionEl = document.getElementById('live-recv-resolution');
         let resolutionPoll;
+        let lastMetrics;
 
         function pollResolution() {
           resolutionPoll = setInterval(() => {
@@ -426,8 +471,12 @@
               const goodput = session.goodput;
               status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
+            onMetrics: (m) => {
+              lastMetrics = m;
+              metricsEl.textContent = formatMetrics(m);
+            },
             onComplete: (file) => {
-              status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type})`;
+              status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type}) — ${formatFinalMetrics(lastMetrics)}`;
 
               const url = URL.createObjectURL(file);
               downloadLink.href = url;
@@ -444,6 +493,8 @@
 
         document.getElementById('live-recv-start').addEventListener('click', async () => {
           downloadLink.style.display = 'none';
+          metricsEl.textContent = '';
+          lastMetrics = undefined;
           status.textContent = 'requesting camera...';
           session = createSession();
           try {

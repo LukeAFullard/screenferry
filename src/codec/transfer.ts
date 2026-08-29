@@ -100,6 +100,16 @@ export class TransferDecoder<F extends Frame = string> {
     return this.decoder.progress ?? 0;
   }
 
+  /** See `BackendDecoder.totalBytes` — `undefined` for a backend that can't report it. */
+  get totalBytes(): number | undefined {
+    return this.decoder.totalBytes;
+  }
+
+  /** See `BackendDecoder.bytesReceived` — `0` for a backend that can't report it. */
+  get bytesReceived(): number {
+    return this.decoder.bytesReceived ?? 0;
+  }
+
   async getResult(): Promise<DecodedFile> {
     return unwrapEnvelope(this.decoder.getResult());
   }

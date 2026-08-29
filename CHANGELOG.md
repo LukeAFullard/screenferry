@@ -20,6 +20,31 @@ negotiation, and Stage 13's Cimbar removal — see below. Stage 10's Cimbar
 backend was built, shipped into this same unreleased line, and then removed
 again; it never reached a published version.
 
+### Added
+
+- **`onMetrics` on `ReceiverSession`/`NegotiatingReceiverSession`** — live
+  transfer throughput, fired alongside every `onProgress`:
+  `{ bytesReceived, totalBytes, bytesPerSecond, elapsedMs }`
+  (`TransferMetrics`, now exported). With Cimbar gone, throughput is the
+  whole reason to choose `qr-bin-lt` over `qr-lt`, and it was previously
+  unmeasurable from outside the library.
+
+  A new callback rather than a widened `onProgress`, because the two answer
+  different questions: `onProgress` is the fountain decoder's completion
+  *estimate* (redundancy-adjusted, clamps near the end), while these are
+  real bytes over real milliseconds. `bytesPerSecond` is measured over a
+  short trailing window rather than cumulatively — a cumulative average
+  never recovers from a stall, so it can't tell you whether the change you
+  just made helped. The last event before `onComplete` carries the final
+  elapsed time, so no second callback was needed for "how long did that
+  take".
+- `StreamDecoder.bytesReceived` / `.totalBytes` (and the same pair on
+  `NegotiatingStreamDecoder` and `BackendDecoder`), the counters
+  `onMetrics` is built from — useful directly for a non-camera receiver.
+  Wire bytes, `undefined`/`0` until the first frame is accepted.
+- A live KB/s and elapsed/remaining readout in `examples/app.html`, on both
+  the self-test and the real-camera receiver.
+
 ### Removed
 
 - **The Cimbar backend, entirely** — `cimbarBackend`, `CimbarEncodeOptions`,

@@ -4,6 +4,20 @@ declare interface BackendDecoder<F extends Frame = Frame> {
     readonly isComplete: boolean;
     /** Estimated completion ratio (0-1), if the backend can produce one. */
     readonly progress?: number;
+    /**
+     * Total envelope bytes the sender is transmitting, if the backend can
+     * report it before the transfer finishes — `undefined` until known (both
+     * fountain backends learn it from the first frame they accept). Wire
+     * bytes, not the original file's size.
+     */
+    readonly totalBytes?: number;
+    /**
+     * Envelope bytes recovered so far, if the backend can report it. Must be
+     * monotonic: `TransferMetrics.bytesPerSecond` differences consecutive
+     * readings, and a reading that went backwards would show as a negative
+     * rate.
+     */
+    readonly bytesReceived?: number;
     /** Envelope-encoded bytes — not yet decompressed or checksum-verified. */
     getResult(): Uint8Array;
 }
@@ -284,6 +298,7 @@ export declare class NegotiatingReceiverSession {
     private readonly decoder;
     private readonly callbacks;
     private readonly goodputTracker;
+    private readonly metricsTracker;
     private unsubscribe;
     private settled;
     private videoElement;
@@ -325,6 +340,10 @@ export declare class NegotiatingStreamDecoder {
     get backendId(): string | undefined;
     get progress(): number;
     get isComplete(): boolean;
+    /** See `StreamDecoder.totalBytes` — `undefined` until a backend is resolved and its first frame accepted. */
+    get totalBytes(): number | undefined;
+    /** See `StreamDecoder.bytesReceived` — `0` until a backend is resolved. */
+    get bytesReceived(): number;
     addFrame(frame: Frame): void;
     getResult(): Promise<Blob>;
     private resolve;
@@ -417,6 +436,7 @@ export declare class ReceiverSession<F extends Frame = string> {
     private readonly decoder;
     private readonly callbacks;
     private readonly goodputTracker;
+    private readonly metricsTracker;
     private unsubscribe;
     private settled;
     constructor(callbacks?: ReceiverSessionCallbacks, backend?: TransferBackend<F>);
@@ -435,6 +455,15 @@ export declare class ReceiverSession<F extends Frame = string> {
 export declare interface ReceiverSessionCallbacks {
     /** Called after every frame that advances decode progress. */
     onProgress?: (progress: number) => void;
+    /**
+     * Wall-clock throughput, fired alongside every `onProgress`. Separate
+     * from `onProgress` on purpose: that one reports the fountain decoder's
+     * completion *estimate*, this one reports real bytes over real time —
+     * see `TransferMetrics`. The last event before `onComplete` carries the
+     * transfer's final elapsed time, so there's no separate "how long did
+     * that take" callback to wait for.
+     */
+    onMetrics?: (metrics: TransferMetrics) => void;
     onComplete?: (file: Blob) => void;
     /** Includes `IntegrityError` on checksum failure — see `StreamDecoder`. */
     onError?: (error: unknown) => void;
@@ -585,6 +614,14 @@ export declare class StreamDecoder<F extends Frame = string> {
     get progress(): number;
     get isComplete(): boolean;
     /**
+     * Total envelope bytes the sender is transmitting — `undefined` until the
+     * first accepted frame announces it. Wire bytes, not the reconstructed
+     * file's size; see `TransferMetrics`.
+     */
+    get totalBytes(): number | undefined;
+    /** Envelope bytes recovered so far. Monotonic; see `TransferMetrics`. */
+    get bytesReceived(): number;
+    /**
      * Resolves to a `File` (a `Blob` with the envelope's recovered `name`) so
      * callers can trigger a real download without a separate filename
      * channel — e.g. `URL.createObjectURL(file)` + `<a download>`.
@@ -611,6 +648,54 @@ export declare interface TransferBackend<F extends Frame = Frame> {
     readonly compressesInternally?: boolean;
     encode(bytes: Uint8Array, opts?: unknown): AsyncIterable<F>;
     createDecoder(): BackendDecoder<F>;
+}
+
+/**
+ * Wall-clock throughput for a receive in progress: how fast bytes are
+ * actually arriving, and how long it has taken so far.
+ *
+ * Deliberately separate from `onProgress`, which reports the fountain
+ * decoder's own completion *estimate*. The two answer different questions —
+ * "how close am I to done" vs. "how fast is this link" — and mixing them
+ * would make both worse: `onProgress` is a redundancy-adjusted heuristic
+ * that clamps near the end, while these numbers are real bytes over real
+ * milliseconds. See `src/backends/fountain-bytes.ts`.
+ */
+export declare interface TransferMetrics {
+    /**
+     * Envelope bytes recovered so far. These are *wire* bytes — the (usually
+     * gzipped) payload plus the envelope header, as the backend frames it —
+     * not the reconstructed file's size, which is only known once the
+     * transfer completes and can be either larger (compression) or a little
+     * smaller (framing overhead) than this. Monotonic.
+     */
+    bytesReceived: number;
+    /**
+     * Total envelope bytes the sender is transmitting. `null` until the first
+     * frame is accepted, since the count comes from the frames themselves —
+     * there is no out-of-band channel to learn it any earlier. Same wire-byte
+     * caveat as `bytesReceived`.
+     */
+    totalBytes: number | null;
+    /**
+     * Instantaneous rate over a short trailing window (~2s), not a cumulative
+     * average. A cumulative average never recovers from a stall — an
+     * autofocus hunt or a few seconds of a badly-aimed camera drags it down
+     * for the rest of the transfer, which makes it useless for the thing a
+     * live readout is for: telling whether what you just changed (moving
+     * closer, raising `fps`, switching backend) is helping *now*. Divide
+     * `bytesReceived` by `elapsedMs` yourself for the cumulative figure —
+     * that is the honest number for a final "took N seconds at M KB/s"
+     * summary.
+     *
+     * `0` until at least two samples exist. Also note this only updates when
+     * a frame is accepted: during a total stall the last value persists
+     * rather than decaying toward zero, and the drop shows up on the first
+     * frame that gets through.
+     */
+    bytesPerSecond: number;
+    /** Milliseconds since `start()` on the session that owns this tracker. */
+    elapsedMs: number;
 }
 
 declare type Unsubscribe = () => void;
