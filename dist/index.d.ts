@@ -158,7 +158,35 @@ export declare interface CameraOptions {
     height?: number;
 }
 
+export declare class ChunkedTransferDecoder<F extends Frame = Frame> {
+    private readonly decoders;
+    private readonly chunkCount;
+    constructor(chunkCount: number, backend?: TransferBackend<F>);
+    get numChunks(): number;
+    receiveTaggedFrame(frame: F, defaultChunkId?: number): {
+        chunkId: number;
+        newlyCompleted: boolean;
+    };
+    isChunkComplete(chunkId: number): boolean;
+    get completedChunks(): boolean[];
+    get isComplete(): boolean;
+    get progress(): number;
+    get totalBytes(): number | undefined;
+    get bytesReceived(): number;
+    getResult(): Promise<DecodedFile>;
+}
+
+export declare interface ChunkPicker {
+    nextChunkIndex(completedChunks: boolean[]): number;
+}
+
+export declare function computeAutoChunkCount(envelopeLength: number, fragmentSize?: number): number;
+
 declare type DecodeCallback = (frame: Frame) => void;
+
+declare interface DecodedFile extends FileMeta {
+    bytes: Uint8Array;
+}
 
 /**
  * Drives an `AsyncIterable<Frame>` (QR frame strings, or a byte-mode
@@ -204,6 +232,19 @@ export declare interface DisplayDriverOptions extends RenderQrOptions {
 
 declare type EccLevel = 'L' | 'M' | 'Q' | 'H';
 
+/**
+ * Splits envelope into `N` equal-sized byte slices (the last chunk receives any remainder).
+ * Each chunk runs its own independent fountain encoder.
+ */
+export declare function encodeChunkedEnvelope<F extends Frame = Frame>(envelope: Uint8Array, chunkCount: number, backend: TransferBackend<F>, opts?: {
+    maxFragmentLength?: number;
+    backendOptions?: unknown;
+}, picker?: ChunkPicker): AsyncIterable<{
+    rawFrame: F;
+    taggedFrame: F;
+    chunkId: number;
+}>;
+
 export declare interface EncodeOptions<F extends Frame = string> {
     /** Fragment size (payload bytes per frame). Ignored if `backendOptions` is set. */
     fragmentSize?: number;
@@ -218,6 +259,9 @@ export declare interface EncodeOptions<F extends Frame = string> {
      * only understand `maxFragmentLength`.
      */
     backendOptions?: unknown;
+    chunked?: boolean;
+    chunkCount?: number | 'auto';
+    picker?: ChunkPicker;
 }
 
 /**
@@ -235,6 +279,11 @@ export declare interface EncodeOptions<F extends Frame = string> {
 export declare function encodeToFrames(file: Blob, opts: NegotiatedEncodeOptions): AsyncIterable<Frame>;
 
 export declare function encodeToFrames<F extends Frame = string>(file: Blob, opts?: EncodeOptions<F>): AsyncIterable<F>;
+
+declare interface FileMeta {
+    filename: string;
+    mimeType: string;
+}
 
 /**
  * A single unit of transmitted data. `qrLtBackend`'s frame is a string (a
@@ -277,6 +326,9 @@ export declare interface NegotiatedEncodeOptions {
     headerIntervalFrames?: number;
     /** Backend-specific encode options for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
     backendOptions?: unknown;
+    chunked?: boolean;
+    chunkCount?: number | 'auto';
+    picker?: ChunkPicker;
 }
 
 /**
@@ -334,17 +386,24 @@ export declare interface NegotiatingReceiverSessionCallbacks extends ReceiverSes
 export declare class NegotiatingStreamDecoder {
     private decoder;
     private resolvedBackendId;
+    private resolvedChunkCount;
     private readonly callbacks;
     constructor(callbacks?: NegotiatingStreamDecoderCallbacks);
     /** The backend id announced by the header frame, once resolved — `undefined` until then. */
     get backendId(): string | undefined;
+    get chunkCount(): number;
+    get completedChunks(): boolean[];
+    get numChunks(): number;
     get progress(): number;
     get isComplete(): boolean;
     /** See `StreamDecoder.totalBytes` — `undefined` until a backend is resolved and its first frame accepted. */
     get totalBytes(): number | undefined;
     /** See `StreamDecoder.bytesReceived` — `0` until a backend is resolved. */
     get bytesReceived(): number;
-    addFrame(frame: Frame): void;
+    addFrame(frame: Frame): {
+        chunkId: number;
+        newlyCompleted: boolean;
+    } | undefined;
     getResult(): Promise<Blob>;
     private resolve;
 }
@@ -411,6 +470,11 @@ declare interface QrEncodeOptions {
      * been validated on physical hardware; see `DEFAULT_MAX_QR_VERSION`.
      */
     maxVersion?: number;
+    /**
+     * Explicit QR mask pattern (0-7), or -1 for auto evaluation.
+     * Defaults to `0` (pinned mask) for faster frame generation.
+     */
+    maskPattern?: number;
 }
 
 /**
@@ -439,7 +503,7 @@ export declare class ReceiverSession<F extends Frame = string> {
     private readonly metricsTracker;
     private unsubscribe;
     private settled;
-    constructor(callbacks?: ReceiverSessionCallbacks, backend?: TransferBackend<F>);
+    constructor(callbacks?: ReceiverSessionCallbacks, backend?: TransferBackend<F>, chunkCount?: number);
     start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void>;
     stop(): void;
     /** Actual negotiated camera resolution, once known — see `Camera.resolution`. */
@@ -455,6 +519,11 @@ export declare class ReceiverSession<F extends Frame = string> {
 export declare interface ReceiverSessionCallbacks {
     /** Called after every frame that advances decode progress. */
     onProgress?: (progress: number) => void;
+    onChunkProgress?: (state: {
+        chunkCount: number;
+        complete: number[];
+        completedChunks: boolean[];
+    }) => void;
     /**
      * Wall-clock throughput, fired alongside every `onProgress`. Separate
      * from `onProgress` on purpose: that one reports the fountain decoder's
@@ -490,6 +559,11 @@ declare interface RenderQrOptions extends QrEncodeOptions {
  * it.
  */
 export declare function resolvePreferredBackend(preferred: PreferredBackend): Promise<TransferBackend<Frame>>;
+
+export declare class RoundRobinChunkPicker implements ChunkPicker {
+    private currentIndex;
+    nextChunkIndex(completedChunks: boolean[]): number;
+}
 
 /**
  * Camera-facing scanner: captures frames and reports decoded content (QR
@@ -608,8 +682,13 @@ export declare interface ScannerOptions extends CameraOptions {
  */
 export declare class StreamDecoder<F extends Frame = string> {
     private readonly decoder;
-    constructor(backend?: TransferBackend<F>);
-    addFrame(data: F): void;
+    constructor(backend?: TransferBackend<F>, chunkCount?: number);
+    addFrame(data: F): {
+        chunkId: number;
+        newlyCompleted: boolean;
+    };
+    get completedChunks(): boolean[];
+    get numChunks(): number;
     /** bc-ur's estimated completion ratio (0-1) — an estimate, not a guarantee. */
     get progress(): number;
     get isComplete(): boolean;
@@ -699,6 +778,14 @@ export declare interface TransferMetrics {
 }
 
 declare type Unsubscribe = () => void;
+
+export declare class WeightedChunkPicker implements ChunkPicker {
+    private currentIndex;
+    private weights;
+    constructor(chunkCount: number);
+    setPriority(doneChunkIds: Set<number>, doneWeight?: number): void;
+    nextChunkIndex(completedChunks: boolean[]): number;
+}
 
 export { }
 

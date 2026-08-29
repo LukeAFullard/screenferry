@@ -115,4 +115,16 @@ describe('QR encode/render layer', () => {
     const totalModules = width / moduleSizePx;
     expect(totalModules - size).toBe(8); // 4 modules on each side
   });
+
+  it('decodes correctly and produces valid payload when mask is pinned (maskPattern: 0)', () => {
+    const text = 'MASK PINNING REGRESSION TEST';
+    const pinned = computeQrModules(text, { maskPattern: 0 });
+    const auto = computeQrModules(text, { maskPattern: -1 });
+
+    const decodedPinned = decodeModulesWithJsQr(pinned.modules);
+    const decodedAuto = decodeModulesWithJsQr(auto.modules);
+
+    expect(decodedPinned).toBe(text);
+    expect(decodedAuto).toBe(text);
+  });
 });

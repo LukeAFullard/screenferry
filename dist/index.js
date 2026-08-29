@@ -10717,6 +10717,7 @@ function _i(e, t) {
 	let n = mi(typeof e == "string" ? gi(e) : [...e], {
 		ecc: t?.eccLevel ?? "L",
 		maxVersion: t?.maxVersion ?? 40,
+		maskPattern: t?.maskPattern ?? 0,
 		border: 0
 	});
 	return {
@@ -10802,34 +10803,7 @@ async function Si(e, t, n) {
 		compressed: i
 	}, a);
 }
-async function Ci(e, t, n) {
-	let r = n?.backend ?? xi, i = await Si(e, t, { skipCompression: r.compressesInternally });
-	return r.encode(i, n?.backendOptions ?? { maxFragmentLength: n?.maxFragmentLength });
-}
-var wi = class {
-	constructor(e = xi) {
-		this.decoder = e.createDecoder();
-	}
-	receivePart(e) {
-		this.decoder.addFrame(e);
-	}
-	isComplete() {
-		return this.decoder.isComplete;
-	}
-	get progress() {
-		return this.decoder.progress ?? 0;
-	}
-	get totalBytes() {
-		return this.decoder.totalBytes;
-	}
-	get bytesReceived() {
-		return this.decoder.bytesReceived ?? 0;
-	}
-	async getResult() {
-		return Ti(this.decoder.getResult());
-	}
-};
-async function Ti(e) {
+async function Ci(e) {
 	let { meta: t, payload: n } = xe(e), r = t.compressed ? ve(n) : new Uint8Array(n), i = await Ce(r);
 	if (i !== t.sha256) throw new Se(`Checksum mismatch: expected ${t.sha256}, got ${i}`);
 	return {
@@ -10839,8 +10813,179 @@ async function Ti(e) {
 	};
 }
 //#endregion
-//#region src/scan/camera.ts
-var Ei = 1920, Di = 1080, Oi = 120, ki = class e {
+//#region src/codec/frame-tag.ts
+function wi(e, t) {
+	if (typeof e == "string") return `c${t}:${e}`;
+	{
+		let n = new Uint8Array(e.length + 1);
+		return n[0] = t, n.set(e, 1), n;
+	}
+}
+function Ti(e, t, n = 0) {
+	if (!t) return {
+		chunkId: n,
+		frame: e
+	};
+	if (typeof e == "string") {
+		if (e.startsWith("c") && e.includes(":")) {
+			let t = e.indexOf(":"), n = e.slice(1, t), r = parseInt(n, 10);
+			if (!isNaN(r)) return {
+				chunkId: r,
+				frame: e.slice(t + 1)
+			};
+		}
+		return {
+			chunkId: n,
+			frame: e
+		};
+	}
+	return e.length > 0 ? {
+		chunkId: e[0],
+		frame: e.subarray(1)
+	} : {
+		chunkId: n,
+		frame: e
+	};
+}
+//#endregion
+//#region src/codec/chunked-transfer.ts
+var Ei = class {
+	constructor() {
+		this.currentIndex = 0;
+	}
+	nextChunkIndex(e) {
+		let t = e.length;
+		if (t === 0) return 0;
+		for (let n = 0; n < t; n++) {
+			let r = (this.currentIndex + n) % t;
+			if (!e[r]) return this.currentIndex = (r + 1) % t, r;
+		}
+		let n = this.currentIndex % t;
+		return this.currentIndex = (n + 1) % t, n;
+	}
+}, Di = class {
+	constructor(e) {
+		this.currentIndex = 0, this.weights = [], this.weights = Array(e).fill(1);
+	}
+	setPriority(e, t = .1) {
+		for (let n = 0; n < this.weights.length; n++) this.weights[n] = e.has(n) ? t : 1;
+	}
+	nextChunkIndex(e) {
+		let t = e.length;
+		if (t === 0) return 0;
+		let n = 0;
+		for (let r = 0; r < t; r++) e[r] || (n += this.weights[r] ?? 1);
+		if (n === 0) {
+			let e = this.currentIndex % t;
+			return this.currentIndex = (e + 1) % t, e;
+		}
+		let r = Math.random() * n;
+		for (let n = 0; n < t; n++) if (!e[n]) {
+			let e = this.weights[n] ?? 1;
+			if (r < e) return n;
+			r -= e;
+		}
+		return 0;
+	}
+};
+function Oi(e, t) {
+	let n = Math.ceil(e / (t ?? 2e3));
+	if (n <= 3e3) return 1;
+	let r = Math.ceil(n / 2500);
+	return Math.min(r, 255);
+}
+async function* ki(e, t, n, r, i) {
+	if (t <= 1) {
+		let t = n.encode(e, r?.backendOptions ?? { maxFragmentLength: r?.maxFragmentLength });
+		for await (let e of t) yield {
+			rawFrame: e,
+			taggedFrame: e,
+			chunkId: 0
+		};
+		return;
+	}
+	let a = e.length, o = Math.ceil(a / t), s = [];
+	for (let n = 0; n < t; n++) {
+		let t = n * o, r = Math.min(t + o, a);
+		s.push(e.subarray(t, r));
+	}
+	let c = await Promise.all(s.map((e) => n.encode(e, r?.backendOptions ?? { maxFragmentLength: r?.maxFragmentLength })[Symbol.asyncIterator]())), l = i ?? new Ei(), u = Array(t).fill(!1);
+	for (;;) {
+		let e = l.nextChunkIndex(u), n = await c[e].next();
+		if (!n.done && n.value !== void 0) {
+			let r = n.value, i;
+			i = t > 1 ? wi(r, e) : r, yield {
+				rawFrame: r,
+				taggedFrame: i,
+				chunkId: e
+			};
+		}
+	}
+}
+var Ai = class {
+	constructor(e, t = xi) {
+		this.chunkCount = Math.max(1, e), this.decoders = Array.from({ length: this.chunkCount }, () => t.createDecoder());
+	}
+	get numChunks() {
+		return this.chunkCount;
+	}
+	receiveTaggedFrame(e, t = 0) {
+		if (this.chunkCount === 1) {
+			let t = this.decoders[0].isComplete;
+			this.decoders[0].addFrame(e);
+			let n = this.decoders[0].isComplete;
+			return {
+				chunkId: 0,
+				newlyCompleted: !t && n
+			};
+		}
+		let n = Ti(e, !0, t), r = n.chunkId;
+		if (r >= 0 && r < this.chunkCount) {
+			let e = this.decoders[r].isComplete;
+			this.decoders[r].addFrame(n.frame);
+			let t = this.decoders[r].isComplete;
+			return {
+				chunkId: r,
+				newlyCompleted: !e && t
+			};
+		}
+		return {
+			chunkId: r,
+			newlyCompleted: !1
+		};
+	}
+	isChunkComplete(e) {
+		return e < 0 || e >= this.chunkCount ? !1 : this.decoders[e].isComplete;
+	}
+	get completedChunks() {
+		return this.decoders.map((e) => e.isComplete);
+	}
+	get isComplete() {
+		return this.decoders.every((e) => e.isComplete);
+	}
+	get progress() {
+		return this.chunkCount === 0 ? 0 : this.decoders.reduce((e, t) => e + (t.progress ?? 0), 0) / this.chunkCount;
+	}
+	get totalBytes() {
+		let e = 0;
+		for (let t of this.decoders) {
+			if (t.totalBytes === void 0) return;
+			e += t.totalBytes;
+		}
+		return e;
+	}
+	get bytesReceived() {
+		return this.decoders.reduce((e, t) => e + (t.bytesReceived ?? 0), 0);
+	}
+	async getResult() {
+		if (!this.isComplete) throw Error("ChunkedTransferDecoder: cannot get result before all chunks complete");
+		let e = [];
+		for (let t of this.decoders) e.push(t.getResult());
+		let t = e.reduce((e, t) => e + t.length, 0), n = new Uint8Array(t), r = 0;
+		for (let t of e) n.set(t, r), r += t.length;
+		return Ci(n);
+	}
+}, ji = 1920, Mi = 1080, Ni = 120, Pi = class e {
 	constructor(t) {
 		this.pumpRunning = !1, this.ownsVideoElement = t === void 0, this.video = t ?? e.createHiddenVideoElement(), this.canvas = document.createElement("canvas");
 		let n = this.canvas.getContext("2d", { willReadFrequently: !0 });
@@ -10854,8 +10999,8 @@ var Ei = 1920, Di = 1080, Oi = 120, ki = class e {
 	async start(e) {
 		let t = {
 			facingMode: e?.facingMode ?? "environment",
-			width: { ideal: e?.width ?? Ei },
-			height: { ideal: e?.height ?? Di },
+			width: { ideal: e?.width ?? ji },
+			height: { ideal: e?.height ?? Mi },
 			aspectRatio: matchMedia("all and (orientation: landscape)").matches ? 16 / 9 : 9 / 16,
 			frameRate: { ideal: 30 }
 		};
@@ -10905,7 +11050,7 @@ var Ei = 1920, Di = 1080, Oi = 120, ki = class e {
 		if (!this.frameReader) return;
 		let e;
 		try {
-			if (e = await this.takeLatestFrame(Oi), e) {
+			if (e = await this.takeLatestFrame(Ni), e) {
 				let t = await this.videoFrameToNativeFrame(e);
 				if (t) return t;
 				this.disableNativeCapture();
@@ -10960,7 +11105,7 @@ var Ei = 1920, Di = 1080, Oi = 120, ki = class e {
 		let n = e.visibleRect;
 		if (!n) return;
 		let { width: r, height: i } = n, a = new Uint8Array(e.allocationSize());
-		if (Ai(await e.copyTo(a), r, i, t)) return {
+		if (Fi(await e.copyTo(a), r, i, t)) return {
 			data: a,
 			width: r,
 			height: i,
@@ -10968,7 +11113,7 @@ var Ei = 1920, Di = 1080, Oi = 120, ki = class e {
 		};
 	}
 };
-function Ai(e, t, n, r) {
+function Fi(e, t, n, r) {
 	let i = Math.ceil(t / 2), a = Math.ceil(n / 2);
 	if (r === "nv12") {
 		if (e.length !== 2) return !1;
@@ -10981,7 +11126,7 @@ function Ai(e, t, n, r) {
 }
 //#endregion
 //#region src/scan/worker-pool.ts
-var ji = class {
+var Ii = class {
 	constructor(e, t) {
 		let n = Math.max(1, Math.floor(e));
 		this.slots = Array.from({ length: n }, () => ({
@@ -11006,7 +11151,7 @@ var ji = class {
 	forEach(e) {
 		for (let t of this.slots) e(t.worker);
 	}
-}, Mi = 20, Ni = 1, Pi = class {
+}, Li = 20, Ri = 1, zi = class {
 	constructor() {
 		this.nextRequestId = 0, this.captureInFlight = !1, this.samplingGeneration = 0, this.decodeBytes = !1, this.callbacks = /* @__PURE__ */ new Set();
 	}
@@ -11017,11 +11162,11 @@ var ji = class {
 		return this.camera?.resolution;
 	}
 	async start(e, t) {
-		this.stop(), this.camera = new ki(e), await this.camera.start(t);
-		let n = t?.scanHz ?? Mi;
+		this.stop(), this.camera = new Pi(e), await this.camera.start(t);
+		let n = t?.scanHz ?? Li;
 		this.decodeBytes = t?.decodeBytes ?? !1;
-		let r = Math.max(1, Math.floor(t?.decodeWorkers ?? Ni));
-		this.pool = new ji(r, () => this.createDecodeWorker()), this.startSampling(() => this.tick(), n);
+		let r = Math.max(1, Math.floor(t?.decodeWorkers ?? Ri));
+		this.pool = new Ii(r, () => this.createDecodeWorker()), this.startSampling(() => this.tick(), n);
 	}
 	createDecodeWorker() {
 		let e = new Worker(new URL(
@@ -11090,7 +11235,7 @@ var ji = class {
 			this.captureInFlight = !1, console.warn("[screenferry] frame capture failed:", e);
 		}
 	}
-}, Fi = class {
+}, Bi = class {
 	constructor(e = 2e3) {
 		this.timestamps = [], this.windowMs = e;
 	}
@@ -11107,8 +11252,8 @@ var ji = class {
 	reset() {
 		this.timestamps = [];
 	}
-}, Ii = 2e3, Li = class {
-	constructor(e = Ii) {
+}, Vi = 2e3, Hi = class {
+	constructor(e = Vi) {
 		this.samples = [], this.startedAt = 0, this.windowMs = e;
 	}
 	start(e = Date.now()) {
@@ -11135,24 +11280,24 @@ var ji = class {
 		for (; n + 1 < this.samples.length && this.samples[n + 1].at <= t;) n++;
 		n > 0 && this.samples.splice(0, n);
 	}
-}, Ri = /* @__PURE__ */ u(gr(), 1), zi = /* @__PURE__ */ u(yr(), 1);
-function Bi(e) {
+}, Ui = /* @__PURE__ */ u(gr(), 1), Wi = /* @__PURE__ */ u(yr(), 1);
+function Gi(e) {
 	return e.default ?? e;
 }
-var Vi = Bi(Ri.default), Hi = Bi(zi.default), Ui = 2931;
-async function* Wi(e, t) {
-	let n = new Vi(Buffer.from(e), t?.maxFragmentLength ?? Ui);
+var Ki = Gi(Ui.default), qi = Gi(Wi.default), Ji = 2931;
+async function* Yi(e, t) {
+	let n = new Ki(Buffer.from(e), t?.maxFragmentLength ?? Ji);
 	for (;;) {
 		let e = n.nextPart();
 		yield new Uint8Array(e.cbor());
 	}
 }
-var Gi = class {
+var Xi = class {
 	constructor() {
-		this.decoder = new Hi();
+		this.decoder = new qi();
 	}
 	receivePart(e) {
-		let t = Ri.FountainEncoderPart.fromCBOR(Buffer.from(e.buffer, e.byteOffset, e.byteLength));
+		let t = Ui.FountainEncoderPart.fromCBOR(Buffer.from(e.buffer, e.byteOffset, e.byteLength));
 		this.decoder.receivePart(t);
 	}
 	isComplete() {
@@ -11172,9 +11317,9 @@ var Gi = class {
 		if (!this.decoder.isSuccess()) throw Error(`FountainByteDecoder: decode failed: ${this.decoder.resultError()}`);
 		return new Uint8Array(this.decoder.resultMessage());
 	}
-}, Ki = class {
+}, Zi = class {
 	constructor() {
-		this.decoder = new Gi();
+		this.decoder = new Xi();
 	}
 	addFrame(e) {
 		this.decoder.receivePart(e);
@@ -11194,39 +11339,48 @@ var Gi = class {
 	getResult() {
 		return this.decoder.getResult();
 	}
-}, qi = {
+}, Qi = {
 	id: "qr-bin-lt",
 	encode(e, t) {
-		return Wi(e, t);
+		return Yi(e, t);
 	},
 	createDecoder() {
-		return new Ki();
+		return new Zi();
 	}
-}, Ji = {
+}, $i = {
 	"qr-lt": xi,
-	"qr-bin-lt": qi
-}, Yi = "sf1:backend=";
-function Xi(e) {
-	return `${Yi}${e}`;
+	"qr-bin-lt": Qi
+}, ea = "sf1:backend=";
+function ta(e, t) {
+	return t?.chunkCount && t.chunkCount > 1 ? `${ea}${e};chunks=${t.chunkCount}` : `${ea}${e}`;
 }
-function Zi(e) {
+function na(e) {
 	let t = (typeof e == "string" ? e : new TextDecoder().decode(e)).toLowerCase();
-	if (t.startsWith(Yi)) return t.slice(12);
+	if (!t.startsWith(ea)) return;
+	let n = t.slice(12).split(";"), r = n[0], i;
+	for (let e = 1; e < n.length; e++) if (n[e].startsWith("chunks=")) {
+		let t = parseInt(n[e].slice(7), 10);
+		!isNaN(t) && t > 0 && (i = t);
+	}
+	return {
+		backendId: r,
+		chunkCount: i
+	};
 }
-function Qi(e) {
-	return Object.prototype.hasOwnProperty.call(Ji, e) ? Ji[e] : void 0;
+function ra(e) {
+	return Object.prototype.hasOwnProperty.call($i, e) ? $i[e] : void 0;
 }
-function $i(e) {
-	return e === qi.id ? { decodeBytes: !0 } : {};
+function ia(e) {
+	return e === Qi.id ? { decodeBytes: !0 } : {};
 }
-async function ea(e) {
-	return e === "qr-bin-lt" ? qi : xi;
+async function aa(e) {
+	return e === "qr-bin-lt" ? Qi : xi;
 }
 //#endregion
 //#region src/backends/display-driver.ts
-var ta = 10, na = class {
+var oa = 10, sa = class {
 	constructor(e, t, n) {
-		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? ta, this.onFrameSent = n?.onFrameSent;
+		this.source = e, this.canvas = t, this.opts = n, this.running = !1, this.frameIndex = 0, this.lastFrameTime = 0, this.renderInFlight = !1, this.fps = n?.fps ?? oa, this.onFrameSent = n?.onFrameSent;
 	}
 	start() {
 		this.running || (this.running = !0, this.iterator = this.source[Symbol.asyncIterator](), this.lastFrameTime = 0, this.visibilityListener = () => {
@@ -11255,54 +11409,57 @@ var ta = 10, na = class {
 		let { value: e, done: t } = await this.iterator.next();
 		t || e === void 0 || !this.running || (yi(e, this.canvas, this.opts), this.onFrameSent?.(this.frameIndex), this.frameIndex++);
 	}
-}, ra = 10;
-function ia(e) {
+}, ca = 10;
+function la(e) {
 	return "preferredBackend" in e;
 }
-async function* aa(e, t, n) {
-	let r = e[Symbol.asyncIterator](), i = Xi(t), a = 0;
+async function* ua(e, t, n, r) {
+	let i = e[Symbol.asyncIterator](), a = ta(t, { chunkCount: r }), o = 0;
 	for (;;) {
-		a % n === 0 && (yield i);
-		let { value: e, done: t } = await r.next();
+		o % n === 0 && (yield a);
+		let { value: e, done: t } = await i.next();
 		if (t) return;
-		yield e, a++;
+		yield e, o++;
 	}
 }
-async function* oa(e, t) {
-	let n = new Uint8Array(await e.arrayBuffer()), r = "name" in e && typeof e.name == "string" ? e.name : "file", i = e.type || "application/octet-stream";
-	if (t && ia(t)) {
-		let e = await ea(t.preferredBackend), a = await Ci(n, {
-			filename: r,
-			mimeType: i
-		}, {
-			maxFragmentLength: t.fragmentSize,
-			backend: e,
-			backendOptions: t.backendOptions
-		}), o = Math.max(1, t.headerIntervalFrames ?? ra);
-		yield* aa(a, e.id, o);
-		return;
-	}
-	yield* await Ci(n, {
+async function* da(e, t) {
+	let n = new Uint8Array(await e.arrayBuffer()), r = "name" in e && typeof e.name == "string" ? e.name : "file", i = e.type || "application/octet-stream", a = t && la(t) ? await aa(t.preferredBackend) : t?.backend ?? xi, o = await Si(n, {
 		filename: r,
 		mimeType: i
-	}, {
+	}, { skipCompression: a.compressesInternally }), s = 1;
+	t?.chunked && (s = typeof t.chunkCount == "number" ? Math.max(1, Math.floor(t.chunkCount)) : Oi(o.length, t.fragmentSize));
+	let c = ki(o, s, a, {
 		maxFragmentLength: t?.fragmentSize,
-		backend: t?.backend,
 		backendOptions: t?.backendOptions
-	});
+	}, t?.picker);
+	async function* l() {
+		for await (let e of c) yield e.taggedFrame;
+	}
+	if (t && la(t)) {
+		let e = Math.max(1, t.headerIntervalFrames ?? ca);
+		yield* ua(l(), a.id, e, s);
+		return;
+	}
+	yield* l();
 }
-var sa = class {
-	constructor(e) {
-		this.decoder = new wi(e);
+var fa = class {
+	constructor(e, t = 1) {
+		this.decoder = new Ai(t, e);
 	}
 	addFrame(e) {
-		this.decoder.receivePart(e);
+		return this.decoder.receiveTaggedFrame(e);
+	}
+	get completedChunks() {
+		return this.decoder.completedChunks;
+	}
+	get numChunks() {
+		return this.decoder.numChunks;
 	}
 	get progress() {
 		return this.decoder.progress;
 	}
 	get isComplete() {
-		return this.decoder.isComplete();
+		return this.decoder.isComplete;
 	}
 	get totalBytes() {
 		return this.decoder.totalBytes;
@@ -11314,9 +11471,9 @@ var sa = class {
 		let { filename: e, mimeType: t, bytes: n } = await this.decoder.getResult();
 		return new File([n], e, { type: t });
 	}
-}, ca = class {
-	constructor(e = {}, t) {
-		this.scanner = new Pi(), this.goodputTracker = new Fi(), this.metricsTracker = new Li(), this.settled = !1, this.callbacks = e, this.decoder = new sa(t);
+}, pa = class {
+	constructor(e = {}, t, n = 1) {
+		this.scanner = new zi(), this.goodputTracker = new Bi(), this.metricsTracker = new Hi(), this.settled = !1, this.callbacks = e, this.decoder = new fa(t, n);
 	}
 	async start(e, t) {
 		this.settled = !1, this.goodputTracker.reset(), this.metricsTracker.start(), this.unsubscribe = this.scanner.onDecode((e) => this.handleFrame(e)), await this.scanner.start(e, t);
@@ -11331,25 +11488,42 @@ var sa = class {
 		return this.goodputTracker.framesPerSecond;
 	}
 	handleFrame(e) {
-		if (!this.settled) {
-			try {
-				this.decoder.addFrame(e);
-			} catch {
-				return;
-			}
-			this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), this.callbacks.onMetrics && this.callbacks.onMetrics(this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes)), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
-				this.stop(), this.callbacks.onComplete?.(e);
-			}).catch((e) => {
-				this.stop(), this.callbacks.onError?.(e);
-			}));
+		if (this.settled) return;
+		let t;
+		try {
+			t = this.decoder.addFrame(e);
+		} catch {
+			return;
 		}
+		if (this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), t.newlyCompleted || this.decoder.completedChunks.some(Boolean)) {
+			let e = this.decoder.completedChunks.map((e, t) => e ? t : -1).filter((e) => e >= 0);
+			this.callbacks.onChunkProgress?.({
+				chunkCount: this.decoder.numChunks,
+				complete: e,
+				completedChunks: this.decoder.completedChunks
+			});
+		}
+		this.callbacks.onMetrics && this.callbacks.onMetrics(this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes)), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
+			this.stop(), this.callbacks.onComplete?.(e);
+		}).catch((e) => {
+			this.stop(), this.callbacks.onError?.(e);
+		}));
 	}
-}, la = class {
+}, ma = class {
 	constructor(e = {}) {
-		this.callbacks = e;
+		this.resolvedChunkCount = 1, this.callbacks = e;
 	}
 	get backendId() {
 		return this.resolvedBackendId;
+	}
+	get chunkCount() {
+		return this.resolvedChunkCount;
+	}
+	get completedChunks() {
+		return this.decoder?.completedChunks ?? [];
+	}
+	get numChunks() {
+		return this.decoder?.numChunks ?? 1;
 	}
 	get progress() {
 		return this.decoder?.progress ?? 0;
@@ -11364,28 +11538,28 @@ var sa = class {
 		return this.decoder?.bytesReceived ?? 0;
 	}
 	addFrame(e) {
-		let t = Zi(e);
+		let t = na(e);
 		if (t !== void 0) {
-			this.resolvedBackendId || this.resolve(t);
+			this.resolvedBackendId || this.resolve(t.backendId, t.chunkCount ?? 1);
 			return;
 		}
 		if (!this.resolvedBackendId) {
 			if (typeof e != "string") return;
-			this.resolve(xi.id);
+			this.resolve(xi.id, 1);
 		}
-		this.decoder?.addFrame(e);
+		return this.decoder?.addFrame(e);
 	}
 	async getResult() {
 		if (!this.decoder) throw Error("NegotiatingStreamDecoder: cannot get result before a backend has been resolved");
 		return this.decoder.getResult();
 	}
-	resolve(e) {
-		let t = Qi(e);
-		t && (this.resolvedBackendId = e, this.decoder = new sa(t), this.callbacks.onBackendResolved?.(e));
+	resolve(e, t = 1) {
+		let n = ra(e);
+		n && (this.resolvedBackendId = e, this.resolvedChunkCount = t, this.decoder = new fa(n, t), this.callbacks.onBackendResolved?.(e));
 	}
-}, ua = class {
+}, ha = class {
 	constructor(e = {}) {
-		this.scanner = new Pi(), this.goodputTracker = new Fi(), this.metricsTracker = new Li(), this.settled = !1, this.callbacks = e, this.decoder = new la({ onBackendResolved: (e) => {
+		this.scanner = new zi(), this.goodputTracker = new Bi(), this.metricsTracker = new Hi(), this.settled = !1, this.callbacks = e, this.decoder = new ma({ onBackendResolved: (e) => {
 			this.callbacks.onBackendResolved?.(e), e !== xi.id && this.switchCaptureMode(e);
 		} });
 	}
@@ -11405,13 +11579,23 @@ var sa = class {
 		return this.goodputTracker.framesPerSecond;
 	}
 	handleFrame(e) {
-		if (!this.settled) {
-			try {
-				this.decoder.addFrame(e);
-			} catch {
-				return;
+		if (this.settled) return;
+		let t;
+		try {
+			t = this.decoder.addFrame(e);
+		} catch {
+			return;
+		}
+		if (t !== void 0) {
+			if (this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), t.newlyCompleted || this.decoder.completedChunks.some(Boolean)) {
+				let e = this.decoder.completedChunks.map((e, t) => e ? t : -1).filter((e) => e >= 0);
+				this.callbacks.onChunkProgress?.({
+					chunkCount: this.decoder.numChunks,
+					complete: e,
+					completedChunks: this.decoder.completedChunks
+				});
 			}
-			this.goodputTracker.record(), this.callbacks.onProgress?.(this.decoder.progress), this.callbacks.onMetrics && this.callbacks.onMetrics(this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes)), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
+			this.callbacks.onMetrics && this.callbacks.onMetrics(this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes)), this.decoder.isComplete && (this.settled = !0, this.decoder.getResult().then((e) => {
 				this.stop(), this.callbacks.onComplete?.(e);
 			}).catch((e) => {
 				this.stop(), this.callbacks.onError?.(e);
@@ -11423,7 +11607,7 @@ var sa = class {
 		try {
 			await this.scanner.start(this.videoElement, {
 				...this.scannerOpts,
-				...$i(e)
+				...ia(e)
 			});
 		} catch (e) {
 			this.callbacks.onError?.(e);
@@ -11431,6 +11615,6 @@ var sa = class {
 	}
 };
 //#endregion
-export { ki as Camera, na as DisplayDriver, Se as IntegrityError, ua as NegotiatingReceiverSession, la as NegotiatingStreamDecoder, ca as ReceiverSession, Pi as Scanner, sa as StreamDecoder, oa as encodeToFrames, qi as qrBinLtBackend, xi as qrLtBackend, ea as resolvePreferredBackend };
+export { Pi as Camera, Ai as ChunkedTransferDecoder, sa as DisplayDriver, Se as IntegrityError, ha as NegotiatingReceiverSession, ma as NegotiatingStreamDecoder, pa as ReceiverSession, Ei as RoundRobinChunkPicker, zi as Scanner, fa as StreamDecoder, Di as WeightedChunkPicker, Oi as computeAutoChunkCount, ki as encodeChunkedEnvelope, da as encodeToFrames, Qi as qrBinLtBackend, xi as qrLtBackend, aa as resolvePreferredBackend };
 
 //# sourceMappingURL=index.js.map

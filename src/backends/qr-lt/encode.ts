@@ -17,6 +17,11 @@ export interface QrEncodeOptions {
    * been validated on physical hardware; see `DEFAULT_MAX_QR_VERSION`.
    */
   maxVersion?: number;
+  /**
+   * Explicit QR mask pattern (0-7), or -1 for auto evaluation.
+   * Defaults to `0` (pinned mask) for faster frame generation.
+   */
+  maskPattern?: number;
 }
 
 export interface QrModuleGrid {
@@ -56,6 +61,7 @@ export function computeQrModules(data: string | Uint8Array, opts?: QrEncodeOptio
   const result = uqrEncode(typeof data === 'string' ? preferAlphanumericCasing(data) : [...data], {
     ecc: opts?.eccLevel ?? DEFAULT_ECC_LEVEL,
     maxVersion: opts?.maxVersion ?? DEFAULT_MAX_QR_VERSION,
+    maskPattern: opts?.maskPattern ?? 0,
     border: 0,
   });
 
