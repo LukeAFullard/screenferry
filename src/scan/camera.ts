@@ -1,4 +1,16 @@
-import type { ImageFrame } from '../backends/types';
+/**
+ * One frame captured straight off the camera in its own native pixel
+ * format (NV12/I420) — same shape as DOM `ImageData` but planar YUV, and
+ * deliberately not typed against `ImageData`, which is RGBA-only. Internal
+ * to `Camera`: the only thing that leaves this class is `grabLumaFrame`'s
+ * luma plane.
+ */
+interface NativeFrame {
+  data: Uint8Array;
+  width: number;
+  height: number;
+  format: 'nv12' | 'i420';
+}
 
 /** Common "1080p" ideal — most webcams/phone cameras support at least this; browsers negotiate down if not. */
 const DEFAULT_IDEAL_WIDTH = 1920;
@@ -17,7 +29,7 @@ declare global {
   /**
    * Part of the "Insertable Streams for MediaStreamTrack" API — not yet in
    * TS's own DOM lib (unlike `VideoFrame`/`VideoPixelFormat`, which are).
-   * Minimal ambient shape for what `Camera.grabNativeFrame` uses: wrapping
+   * Minimal ambient shape for what `Camera`'s native capture path uses: wrapping
    * a live camera track's `MediaStreamVideoTrack` as a `ReadableStream` of
    * `VideoFrame`s in the browser's *native* capture format (NV12/I420 on
    * most platforms), with no canvas/RGBA conversion in between.
@@ -35,9 +47,9 @@ export interface CameraOptions {
    * Requested capture resolution (`ideal`, not a hard minimum — the browser
    * still falls back to whatever the hardware supports). Defaults to a high
    * resolution: with no constraint at all, browsers commonly negotiate down
-   * to something like 640x480, which is fine for QR's large modules but
-   * leaves too few pixels per cell for `cimbarBackend`'s much finer grid to
-   * resolve, even when the code fills the frame.
+   * to something like 640x480, which leaves too few pixels per module to
+   * read a dense QR frame (a large `fragmentSize`, so a high QR version)
+   * reliably, even when the code fills the frame.
    */
   width?: number;
   height?: number;
@@ -87,12 +99,10 @@ export class Camera {
   }
 
   async start(opts?: CameraOptions): Promise<HTMLVideoElement> {
-    // `exposureMode`/`focusMode` match the constraints the only
-    // known-working browser Cimbar receiver (`sz3/libcimbar`'s `recv.js`,
-    // `init_video`) requests. Cimbar's fixed-threshold anchor detector
-    // (`Scanner::test_pixel` in libcimbar) is far more sensitive than QR to
-    // exposure/focus hunting and motion blur, and these are how that
-    // reference implementation avoids it. They aren't part of the standard
+    // `exposureMode`/`focusMode` ask the camera to keep converging rather
+    // than lock onto whatever it saw first: an autofocus or exposure hunt
+    // across a changing high-contrast pattern is one of the main ways a
+    // live transfer stalls mid-stream. They aren't part of the standard
     // `MediaTrackConstraints` TS type (still draft/experimental), but
     // browsers silently ignore constraint names they don't support, so
     // adding them unconditionally is safe even where they're unsupported.
@@ -125,7 +135,7 @@ export class Camera {
   }
 
   /**
-   * Best-effort setup for `grabNativeFrame`'s WebCodecs path — silently
+   * Best-effort setup for `grabLumaFrame`'s WebCodecs path — silently
    * leaves `frameReader` unset (rather than throwing) on any unsupported
    * browser, so callers always have the canvas/RGBA fallback available.
    */
@@ -182,54 +192,19 @@ export class Camera {
   }
 
   /**
-   * Captures one frame preferring the camera's *native* pixel format
-   * (NV12/I420) straight off a `MediaStreamTrackProcessor`-backed
-   * `VideoFrame`, skipping `grabFrame`'s video → `<canvas>` 2D `drawImage`
-   * → `getImageData` RGBA round trip entirely — an unnecessary
-   * color-processing hop for a format like Cimbar's that only needs 2 bits
-   * of color per cell. Falls back to `grabFrame`'s canvas/RGBA path when
-   * the native path is unavailable (unsupported browser) or the captured
-   * `VideoFrame`'s format isn't one `cimbarBackend` recognizes.
-   *
-   * Unlike `grabFrame`, this is `async`: reading a `VideoFrame`'s pixel
-   * planes (`copyTo`) is inherently asynchronous, and `frameReader` is a
-   * push-model `ReadableStream` reader, not a "give me whatever's on
-   * screen right now" pull like `<video>` + `drawImage`.
-   */
-  async grabNativeFrame(): Promise<ImageFrame | undefined> {
-    const frame = await this.captureNativeFrame();
-    if (frame) return frame;
-
-    const imageData = this.grabFrame();
-    if (!imageData) return undefined;
-
-    return {
-      data: new Uint8Array(
-        imageData.data.buffer,
-        imageData.data.byteOffset,
-        imageData.data.byteLength,
-      ),
-      width: imageData.width,
-      height: imageData.height,
-      format: 'rgba',
-    };
-  }
-
-  /**
-   * Captures one frame's luminance plane only, straight off the same
-   * native NV12/I420 capture `grabNativeFrame` uses — for a QR decode,
-   * where color carries no information (unlike Cimbar's color-coded
-   * cells), capturing and shipping the other 3/4 of an RGBA frame to the
-   * decode worker is pure waste. Y is always NV12/I420's first plane,
+   * Captures one frame's luminance plane only, straight off a native
+   * NV12/I420 `VideoFrame` — for a QR decode, where color carries no
+   * information at all, capturing and shipping the other 3/4 of an RGBA
+   * frame to the decode worker is pure waste. Y is always NV12/I420's first
+   * plane,
    * tightly packed at offset 0 with stride === width (verified by
-   * `videoFrameToImageFrame`'s `planesArePacked` check before a frame ever
+   * `videoFrameToNativeFrame`'s `planesArePacked` check before a frame ever
    * reaches here), so this needs no separate WebCodecs read — just the
    * leading `width * height` bytes of an already-captured native frame.
    *
    * Returns `undefined` when the native capture path itself is unavailable
-   * (unsupported browser) or failed for any reason, mirroring
-   * `grabNativeFrame`'s own fallback — the caller (`Scanner`) falls back to
-   * `grabFrame`'s canvas/RGBA path in that case.
+   * (unsupported browser) or failed for any reason — the caller (`Scanner`)
+   * falls back to `grabFrame`'s canvas/RGBA path in that case.
    *
    * Uses `.slice()`, not `.subarray()`: a subarray stays a *view* onto
    * `frame.data`'s full NV12/I420 backing buffer, so `postMessage`'s
@@ -250,19 +225,19 @@ export class Camera {
     };
   }
 
-  /** Shared native-capture attempt behind `grabNativeFrame`/`grabLumaFrame` — `undefined` on any failure or if the native path isn't available, with no RGBA fallback of its own (each caller applies its own). */
-  private async captureNativeFrame(): Promise<ImageFrame | undefined> {
+  /** The native-capture attempt behind `grabLumaFrame` — `undefined` on any failure or if the native path isn't available, with no RGBA fallback of its own (the caller applies that). */
+  private async captureNativeFrame(): Promise<NativeFrame | undefined> {
     if (!this.frameReader) return undefined;
 
     let videoFrame: VideoFrame | undefined;
     try {
       videoFrame = await this.takeLatestFrame(NATIVE_FRAME_WAIT_MS);
       if (videoFrame) {
-        const frame = await this.videoFrameToImageFrame(videoFrame);
+        const frame = await this.videoFrameToNativeFrame(videoFrame);
         if (frame) return frame;
 
         // The frame arrived fine but its layout isn't one we can use
-        // (`videoFrameToImageFrame` returned `undefined`: a format like
+        // (`videoFrameToNativeFrame` returned `undefined`: a format like
         // BGRA, or non-packed planes). Both are properties of the stream,
         // not of this frame, so they will hold for every frame this track
         // ever produces -- shut the native path down rather than decode and
@@ -345,8 +320,8 @@ export class Camera {
         }
       } catch {
         // Reader cancelled by `stop()`, or the track ended — either way the
-        // pump is done; `grabLumaFrame`/`grabNativeFrame` fall back to the
-        // canvas/RGBA path from here.
+        // pump is done; `grabLumaFrame` returns `undefined` and its caller
+        // falls back to the canvas/RGBA path from here.
       } finally {
         // However the loop ended, no further frames are coming. Clearing this
         // is what stops `takeLatestFrame` from waiting out its full timeout
@@ -387,24 +362,23 @@ export class Camera {
   }
 
   /**
-   * `format = 12` (NV12) / `format = 420` (I420) match the pixel-format
-   * codes `_cimbard_scan_extract_decode` expects for those layouts (see
-   * `module.ts`'s `PIXEL_FORMAT_*` constants) -- any other native
-   * `VideoFrame.format` (e.g. `'RGBA'`/`'BGRA'` from a browser/camera combo
-   * that doesn't expose YUV) returns `undefined` so the caller falls back
-   * to the canvas/RGBA path instead of guessing at an unsupported layout.
+   * NV12 and I420 are the two layouts this path recognizes -- any other
+   * native `VideoFrame.format` (e.g. `'RGBA'`/`'BGRA'` from a browser/camera
+   * combo that doesn't expose YUV) returns `undefined` so the caller falls
+   * back to the canvas/RGBA path instead of guessing at an unsupported
+   * layout.
    *
    * Per the WebCodecs spec, `allocationSize()`/`copyTo()` both default
    * their `rect` option to the frame's *visible* rect, not its
    * `codedWidth`/`codedHeight` -- on cameras where those differ (e.g. a
    * 1080-tall visible frame inside a 1088-tall H.264 macroblock-padded
    * coded frame), reporting `codedWidth`/`codedHeight` alongside a buffer
-   * sized for the visible rect desyncs the two, corrupting the chroma-plane
-   * offsets `_cimbard_scan_extract_decode`'s raw `cv::Mat` read assumes.
+   * sized for the visible rect desyncs the two: `grabLumaFrame` would then
+   * slice a luma plane of the wrong length out of the captured buffer.
    * Report `visibleRect`'s dimensions instead, to match the buffer that was
    * actually captured.
    */
-  private async videoFrameToImageFrame(videoFrame: VideoFrame): Promise<ImageFrame | undefined> {
+  private async videoFrameToNativeFrame(videoFrame: VideoFrame): Promise<NativeFrame | undefined> {
     const format =
       videoFrame.format === 'NV12' ? 'nv12' : videoFrame.format === 'I420' ? 'i420' : undefined;
     if (!format) return undefined;
@@ -416,19 +390,19 @@ export class Camera {
     const data = new Uint8Array(videoFrame.allocationSize());
     const planes = await videoFrame.copyTo(data);
 
-    // libcimbar's raw `cv::Mat` read over this buffer assumes each plane is
-    // tightly packed (row stride equals plane width, no gaps between
-    // planes) -- true for a typical capture, but not guaranteed by the
-    // WebCodecs spec. When it isn't (row padding, a driver that pads
-    // differently), fall back to the canvas/RGBA path rather than hand
-    // libcimbar a buffer it will misread.
+    // `grabLumaFrame` slices the leading `width * height` bytes out of this
+    // buffer, which is only the luma plane if that plane is tightly packed
+    // (row stride equals width, offset 0) -- true for a typical capture, but
+    // not guaranteed by the WebCodecs spec. When it isn't (row padding, a
+    // driver that pads differently), fall back to the canvas/RGBA path
+    // rather than ship the decoder a misread buffer.
     if (!planesArePacked(planes, width, height, format)) return undefined;
 
     return { data, width, height, format };
   }
 }
 
-/** See `Camera.videoFrameToImageFrame`'s doc comment. */
+/** See `Camera.videoFrameToNativeFrame`'s doc comment. */
 function planesArePacked(
   planes: readonly { offset: number; stride: number }[],
   width: number,

@@ -36,6 +36,6 @@ export function renderQrToCanvas(
 
   // `rasterizeQrModules` always allocates a plain `ArrayBuffer`-backed
   // array (never `SharedArrayBuffer`) — see the analogous cast in
-  // `DisplayDriver.renderImageFrame`.
+  // `StreamDecoder.getResult`.
   ctx.putImageData(new ImageData(data as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0);
 }

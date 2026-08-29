@@ -26,7 +26,6 @@ export default [
     },
   },
   {
-    // Vendored third-party build output — not ours to lint.
-    ignores: ['dist/', 'node_modules/', 'src/backends/cimbar/vendor/'],
+    ignores: ['dist/', 'node_modules/'],
   },
 ];

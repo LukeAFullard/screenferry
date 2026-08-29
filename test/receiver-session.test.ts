@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { TransferMetrics } from '../src/scan/metrics';
 
 type DecodeCallback = (text: string) => void;
 
@@ -39,7 +40,8 @@ vi.mock('../src/scan/index', () => ({
 }));
 
 // Imported after the mock so ReceiverSession picks up FakeScanner.
-const { ReceiverSession, encodeToFrames } = await import('../src/index');
+const { ReceiverSession, NegotiatingReceiverSession, encodeToFrames } =
+  await import('../src/index');
 const { pseudoRandomBytes } = await import('./helpers/bytes');
 
 async function collectFrames(bytes: Uint8Array<ArrayBuffer>, count: number): Promise<string[]> {
@@ -150,6 +152,84 @@ describe('ReceiverSession', () => {
     expect(session.goodput).toBeGreaterThan(0);
   });
 
+  it('reports transfer metrics alongside progress, at the controlled data rate', async () => {
+    FakeScanner.instances.length = 0;
+    const bytes = pseudoRandomBytes(4000, 34);
+    const frames = await collectFrames(bytes, 500);
+
+    // Frames are fed one per 100ms of fake clock, so the observed rate is
+    // arithmetic rather than machine-speed-dependent: whatever the decoder
+    // recovers per frame, divided by 0.1s.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+
+      const seen: TransferMetrics[] = [];
+      const session = new ReceiverSession({ onMetrics: (m) => seen.push(m) });
+      await session.start();
+      const scanner = FakeScanner.instances[FakeScanner.instances.length - 1];
+
+      for (const [index, frame] of frames.entries()) {
+        vi.setSystemTime((index + 1) * 100);
+        scanner.emit(frame);
+        if (scanner.stopped) break;
+      }
+
+      expect(seen.length).toBeGreaterThan(2);
+
+      // elapsedMs is monotonic and tracks the fake clock exactly.
+      for (let i = 1; i < seen.length; i++) {
+        expect(seen[i].elapsedMs).toBeGreaterThan(seen[i - 1].elapsedMs);
+      }
+      expect(seen[0].elapsedMs).toBe(100);
+
+      // bytesReceived is monotonic, bounded by the total, and reaches it.
+      const total = seen[seen.length - 1].totalBytes;
+      expect(total).toBeGreaterThan(0);
+      for (let i = 1; i < seen.length; i++) {
+        expect(seen[i].bytesReceived).toBeGreaterThanOrEqual(seen[i - 1].bytesReceived);
+        expect(seen[i].totalBytes).toBe(total);
+        expect(seen[i].bytesReceived).toBeLessThanOrEqual(total!);
+      }
+      expect(seen[seen.length - 1].bytesReceived).toBe(total);
+
+      // One frame per 100ms of fake clock, so the reported rate must equal
+      // the bytes recovered across the tracker's own ~2s window divided by
+      // that window's seconds — recomputed here from the emitted events
+      // rather than assumed, since which sample anchors the window is the
+      // thing being checked.
+      const last = seen[seen.length - 1];
+      const cutoff = last.elapsedMs - 2000;
+      const anchor = [...seen].reverse().find((m) => m.elapsedMs <= cutoff) ?? seen[0];
+      const spanSeconds = (last.elapsedMs - anchor.elapsedMs) / 1000;
+      const expectedRate = (last.bytesReceived - anchor.bytesReceived) / spanSeconds;
+
+      expect(last.bytesPerSecond).toBeCloseTo(expectedRate, 6);
+      expect(last.bytesPerSecond).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fires onMetrics exactly as often as onProgress', async () => {
+    FakeScanner.instances.length = 0;
+    const bytes = pseudoRandomBytes(2000, 35);
+    const frames = await collectFrames(bytes, 500);
+
+    const onProgress = vi.fn();
+    const onMetrics = vi.fn();
+    const session = new ReceiverSession({ onProgress, onMetrics });
+    await session.start();
+    const scanner = FakeScanner.instances[FakeScanner.instances.length - 1];
+
+    for (const frame of frames) {
+      scanner.emit(frame);
+      if (scanner.stopped) break;
+    }
+
+    expect(onMetrics).toHaveBeenCalledTimes(onProgress.mock.calls.length);
+  });
+
   it('stop() unsubscribes and stops the scanner', async () => {
     FakeScanner.instances.length = 0;
     const session = new ReceiverSession();
@@ -160,5 +240,43 @@ describe('ReceiverSession', () => {
 
     expect(scanner.stopped).toBe(true);
     expect(scanner.callbacks.size).toBe(0);
+  });
+});
+
+describe('NegotiatingReceiverSession metrics', () => {
+  it('reports metrics for a negotiated transfer, ignoring the header frames', async () => {
+    FakeScanner.instances.length = 0;
+    const bytes = pseudoRandomBytes(3000, 36);
+    const file = new File([bytes], 'negotiated.bin', { type: 'application/octet-stream' });
+
+    const frames: string[] = [];
+    for await (const frame of encodeToFrames(file, {
+      preferredBackend: 'qr-lt',
+      fragmentSize: 150,
+    })) {
+      frames.push(frame as string);
+      if (frames.length >= 500) break;
+    }
+
+    const seen: TransferMetrics[] = [];
+    const onProgress = vi.fn();
+    const session = new NegotiatingReceiverSession({
+      onProgress,
+      onMetrics: (m) => seen.push(m),
+    });
+    await session.start();
+    const scanner = FakeScanner.instances[FakeScanner.instances.length - 1];
+
+    for (const frame of frames) {
+      scanner.emit(frame);
+      if (scanner.stopped) break;
+    }
+
+    // Header/beacon frames are beacons, not payload — they advance neither
+    // callback, so the two stay in lockstep here as well.
+    expect(seen.length).toBe(onProgress.mock.calls.length);
+    expect(seen.length).toBeGreaterThan(2);
+    expect(seen[seen.length - 1].totalBytes).toBeGreaterThan(0);
+    expect(seen[seen.length - 1].bytesReceived).toBe(seen[seen.length - 1].totalBytes);
   });
 });

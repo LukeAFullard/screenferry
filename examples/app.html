@@ -23,14 +23,11 @@
         /* Deliberately NOT forcing a small display width/height: `width`/
            `height` stay `auto` so the canvas shows at its native
            backing-store resolution (the actual encoded pixels) instead of
-           being scaled down by the browser. This matters a lot for Cimbar:
-           its 1024x1024 render downscaled into a small CSS box gets visibly
-           mangled (nearest-neighbor `image-rendering: pixelated`, previously
-           set here, made this actively worse by aliasing the fine color
-           grid rather than smoothing it) -- QR's much smaller native
-           renders were never affected either way. `max-width` is capped by
-           viewport width, not the page's narrow ~720px text column, so a
-           desktop window can actually show Cimbar close to native size. */
+           being scaled down by the browser -- a downscaled QR frame is
+           harder for the receiving camera to resolve, especially at a large
+           `fragmentSize`. `max-width` is capped by viewport width, not the
+           page's narrow ~720px text column, so a desktop window can show
+           the code close to native size. */
         border: 1px solid #ccc;
         width: auto;
         height: auto;
@@ -49,7 +46,8 @@
         resize: both;
         overflow: hidden;
       }
-      #live-recv-resolution {
+      #live-recv-resolution,
+      .metrics {
         font-family: monospace;
         color: #666;
         margin: 0.25rem 0 0;
@@ -84,8 +82,7 @@
     <p>
       A basic manual test harness — not part of the library, not published. Uses the negotiated API
       (<code>preferredBackend</code>), so it exercises <code>qrLtBackend</code>,
-      <code>qrBinLtBackend</code>, <code>cimbarBackend</code>, and the header-frame auto-detection
-      between them.
+      <code>qrBinLtBackend</code>, and the header-frame auto-detection between them.
     </p>
 
     <p>
@@ -93,25 +90,8 @@
       <select id="backend">
         <option value="qr-lt" selected>qr-lt (default, well-tested)</option>
         <option value="qr-bin-lt">qr-bin-lt (byte-mode QR, ~39% more payload/frame)</option>
-        <option value="cimbar">cimbar (opt-in — see README's Cimbar section)</option>
-        <option value="auto">auto (negotiated)</option>
+        <option value="auto">auto (resolves to qr-lt)</option>
       </select>
-      <label>
-        <input type="checkbox" id="pin-cimbar" />
-        pin cimbar (skip negotiation — for testing)
-      </label>
-    </p>
-    <p>
-      <small>
-        When checked and backend is <code>cimbar</code>, every section below uses the pinned,
-        non-negotiated path (<code>encodeToFrames(file, { backend: cimbarBackend })</code> /
-        <code>new ReceiverSession(callbacks, cimbarBackend).start(video, { rawFrames: true })</code
-        >) instead of <code>preferredBackend</code> + <code>NegotiatingReceiverSession</code>. This
-        removes <code>NegotiatingReceiverSession.switchToRawFrames()</code>'s camera stop/restart
-        handoff as a variable — a handoff this project's own docs note is un-exercised against real
-        camera hardware. If cimbar works pinned but not negotiated, the bug is in that handoff, not
-        the cimbar codec itself.
-      </small>
     </p>
 
     <p>
@@ -121,7 +101,7 @@
         >fps: <input type="number" id="tune-fps" value="10" min="1" max="60" style="width: 4em"
       /></label>
       <label
-        >fragmentSize (qr-lt / qr-bin-lt only):
+        >fragmentSize:
         <input
           type="number"
           id="tune-fragment"
@@ -135,19 +115,8 @@
         <input type="number" id="tune-scanhz" value="20" min="1" max="60" style="width: 4em"
       /></label>
       <label
-        >decode workers (receiver, qr-lt / qr-bin-lt only):
+        >decode workers (receiver):
         <input type="number" id="tune-decode-workers" value="1" min="1" max="8" style="width: 3em"
-      /></label>
-      <label
-        >frameSize (cimbar only):
-        <input
-          type="number"
-          id="tune-cimbar-frame-size"
-          placeholder="1024"
-          min="64"
-          max="2048"
-          step="64"
-          style="width: 5em"
       /></label>
     </p>
 
@@ -175,6 +144,7 @@
         </div>
       </div>
       <progress id="self-test-progress" value="0" max="1"></progress>
+      <p class="metrics" id="self-test-metrics"></p>
       <pre id="status">idle</pre>
       <p><a id="self-test-download" style="display: none">Download reconstructed file</a></p>
     </section>
@@ -194,10 +164,9 @@
         <button id="live-send-stop">Stop</button>
       </p>
       <p>
-        The canvas below now displays at its native resolution (drag its bottom-right corner to
-        resize further). For Cimbar specifically, avoid shrinking it — its 1024×1024 render
-        downscaled into a small box gets visibly mangled, not just smaller; hold the receiving
-        camera close instead if you want the code to fill more of its view.
+        The canvas below displays at its native resolution (drag its bottom-right corner to resize
+        further). Avoid shrinking it — a downscaled code is harder for the receiving camera to
+        resolve; hold the camera closer instead if you want the code to fill more of its view.
       </p>
       <canvas id="live-send-canvas"></canvas>
       <pre id="live-send-status">idle</pre>
@@ -207,9 +176,8 @@
       <h2>3. Receive (real camera)</h2>
       <p>
         Point this device's camera at another device running section 2. Drag the video's
-        bottom-right corner to resize the preview — for Cimbar especially, a bigger preview makes it
-        much easier to judge whether the code fills the frame cleanly (see the tuning notes below:
-        on-screen code size and camera resolution matter more for Cimbar than for QR).
+        bottom-right corner to resize the preview — a bigger preview makes it much easier to judge
+        whether the code fills the frame cleanly (see the tuning notes below).
       </p>
       <video id="live-recv-video" autoplay playsinline muted></video>
       <p id="live-recv-resolution"></p>
@@ -218,6 +186,7 @@
         <button id="live-recv-stop">Stop</button>
       </p>
       <progress id="live-recv-progress" value="0" max="1"></progress>
+      <p class="metrics" id="live-recv-metrics"></p>
       <pre id="live-recv-status">idle</pre>
       <p><a id="live-recv-download" style="display: none">Download reconstructed file</a></p>
     </section>
@@ -270,58 +239,13 @@
         real-world reliability (which is what lets you safely raise fps/fragmentSize in the first
         place) than any of the code-level knobs above.
       </p>
-      <h3>Cimbar-specific notes</h3>
-      <p>
-        Cimbar packs far more information per unit area than QR (a fixed 112×112-cell grid across
-        the whole frame at every <code>frameSize</code>, vs. QR's much larger, sparser modules), so
-        it's far more sensitive to things QR mostly tolerates:
-      </p>
-      <ul>
-        <li>
-          <strong>On-screen code size.</strong> The sender canvas below now displays at its native
-          resolution instead of being squashed into a small box — that squashing was previously
-          forcing an ugly, aliased downscale of Cimbar's fine grid (nearest-neighbor scaling of a
-          1024×1024 render into a few hundred CSS pixels), which likely made frames flatly
-          unreadable regardless of the camera. Resize it further if useful (see section 2), and hold
-          the receiving camera close enough that the code fills a good fraction of the frame.
-        </li>
-        <li>
-          <strong>Camera capture resolution.</strong> Without an explicit constraint, browsers often
-          negotiate a low resolution (e.g. 640x480) that's plenty for QR but starves Cimbar of
-          pixels per cell. <code>Camera</code>/<code>Scanner</code> now request 1920x1080 as an
-          <em>ideal</em> by default — section 3 shows the actual negotiated resolution once scanning
-          starts, so you can tell whether the camera is genuinely giving you low resolution vs. the
-          code just being displayed too small.
-        </li>
-        <li>
-          <strong><code>frameSize</code> is a resolution knob, not a density knob.</strong> Cimbar's
-          mode B grid is always 112×112 cells no matter what <code>frameSize</code> you pick —
-          shrinking it to e.g. 512 does <em>not</em> produce fewer, bigger, easier-to-scan cells; it
-          renders the exact same 112×112 grid into fewer physical pixels, giving the camera
-          <em>less</em> to work with per cell. If anything, try raising it above the 1024 default
-          (device performance permitting) rather than lowering it, and lean on a larger on-screen
-          display size / closer camera distance as the main reliability lever instead.
-        </li>
-      </ul>
     </section>
 
     <script type="module">
-      import {
-        encodeToFrames,
-        DisplayDriver,
-        NegotiatingReceiverSession,
-        ReceiverSession,
-        cimbarBackend,
-      } from '../dist/index.js';
+      import { encodeToFrames, DisplayDriver, NegotiatingReceiverSession } from '../dist/index.js';
 
       function selectedBackend() {
         return document.getElementById('backend').value;
-      }
-
-      // Fix 5: pin cimbar (skip the header-frame negotiation + `NegotiatingReceiverSession`'s
-      // camera stop/restart handoff) so testing cimbar doesn't also depend on that handoff.
-      function pinned(backend) {
-        return backend === 'cimbar' && document.getElementById('pin-cimbar').checked;
       }
 
       function tuning() {
@@ -330,14 +254,39 @@
         const fragmentSize = fragmentRaw ? Number(fragmentRaw) : undefined;
         const scanHz = Number(document.getElementById('tune-scanhz').value) || 20;
         const decodeWorkers = Number(document.getElementById('tune-decode-workers').value) || 1;
-        const cimbarFrameSizeRaw = document.getElementById('tune-cimbar-frame-size').value;
-        // undefined -> cimbarBackend's own 1024 default; encodeToFrames only
-        // forwards backendOptions when it's actually set, so qr-lt/auto stay
-        // unaffected by this even when it has a value.
-        const backendOptions = cimbarFrameSizeRaw
-          ? { frameSize: Number(cimbarFrameSizeRaw) }
-          : undefined;
-        return { fps, fragmentSize, scanHz, decodeWorkers, backendOptions };
+        return { fps, fragmentSize, scanHz, decodeWorkers };
+      }
+
+      // Renders `onMetrics` as a one-line "X KB/s — N.N KB of M.M KB —
+      // 12s elapsed, ~8s left" readout. Remaining time comes from the
+      // rolling-window rate rather than the cumulative average, so it
+      // reacts to what you just changed (moving the camera, a different
+      // backend) instead of being anchored to the whole transfer's history.
+      function formatMetrics(m) {
+        const kb = (bytes) => (bytes / 1024).toFixed(1);
+        const seconds = (ms) => `${(ms / 1000).toFixed(0)}s`;
+
+        const parts = [`${kb(m.bytesPerSecond)} KB/s`];
+        parts.push(m.totalBytes ? `${kb(m.bytesReceived)} of ${kb(m.totalBytes)} KB` : 'sizing...');
+
+        let time = `${seconds(m.elapsedMs)} elapsed`;
+        if (m.totalBytes && m.bytesPerSecond > 0) {
+          const remainingMs = ((m.totalBytes - m.bytesReceived) / m.bytesPerSecond) * 1000;
+          time += `, ~${seconds(remainingMs)} left`;
+        }
+        parts.push(time);
+
+        return parts.join(' — ');
+      }
+
+      // The one-time summary: cumulative bytes over wall-clock time, which
+      // is the honest figure for "this transfer took N seconds at M KB/s"
+      // (see TransferMetrics.bytesPerSecond on why the live number isn't).
+      function formatFinalMetrics(m) {
+        if (!m) return '';
+        const seconds = (m.elapsedMs / 1000).toFixed(1);
+        const average = m.elapsedMs > 0 ? m.bytesReceived / 1024 / (m.elapsedMs / 1000) : 0;
+        return `${seconds}s at ${average.toFixed(1)} KB/s average`;
       }
 
       function defaultSampleFile(label) {
@@ -352,7 +301,9 @@
         const cameraCtx = cameraCanvas.getContext('2d');
         const status = document.getElementById('status');
         const progress = document.getElementById('self-test-progress');
+        const metricsEl = document.getElementById('self-test-metrics');
         const downloadLink = document.getElementById('self-test-download');
+        let lastMetrics;
 
         let mirrorHandle;
         function startMirroring() {
@@ -372,15 +323,16 @@
         document.getElementById('self-test-start').addEventListener('click', async () => {
           downloadLink.style.display = 'none';
           progress.value = 0;
+          metricsEl.textContent = '';
+          lastMetrics = undefined;
 
           const backend = selectedBackend();
-          const isPinned = pinned(backend);
           const file =
             document.getElementById('self-test-file').files?.[0] ?? defaultSampleFile(backend);
 
           // A fresh captureStream() per call, not one captured upfront and
           // reused: NegotiatingReceiverSession restarts Scanner (stop+start)
-          // when switching into rawFrames mode for a non-qr-lt backend, and
+          // when switching into byte-decode mode for a non-qr-lt backend, and
           // Camera.stop() correctly stops its stream's tracks (the right
           // behavior for a real camera) -- reusing a single already-stopped
           // fake stream here would leave the receiver with a permanently
@@ -390,10 +342,8 @@
           navigator.mediaDevices.getUserMedia = async () => cameraCanvas.captureStream(15);
           startMirroring();
 
-          const { fps, fragmentSize, scanHz, decodeWorkers, backendOptions } = tuning();
-          const senderFrames = isPinned
-            ? encodeToFrames(file, { backend: cimbarBackend, fragmentSize, backendOptions })
-            : encodeToFrames(file, { preferredBackend: backend, fragmentSize, backendOptions });
+          const { fps, fragmentSize, scanHz, decodeWorkers } = tuning();
+          const senderFrames = encodeToFrames(file, { preferredBackend: backend, fragmentSize });
           const senderDriver = new DisplayDriver(senderFrames, senderCanvas, { fps });
           senderDriver.start();
 
@@ -412,8 +362,12 @@
               const goodput = session.goodput;
               status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
+            onMetrics: (m) => {
+              lastMetrics = m;
+              metricsEl.textContent = formatMetrics(m);
+            },
             onComplete: (resultFile) => {
-              status.textContent = `done: "${resultFile.name}" (${resultFile.size} bytes) via ${backend}`;
+              status.textContent = `done: "${resultFile.name}" (${resultFile.size} bytes) via ${backend} — ${formatFinalMetrics(lastMetrics)}`;
               cleanup();
 
               const url = URL.createObjectURL(resultFile);
@@ -427,16 +381,11 @@
               cleanup();
             },
           };
-          const session = isPinned
-            ? new ReceiverSession(callbacks, cimbarBackend)
-            : new NegotiatingReceiverSession(callbacks);
+          const session = new NegotiatingReceiverSession(callbacks);
 
           try {
-            await session.start(
-              undefined,
-              isPinned ? { scanHz, rawFrames: true } : { scanHz, decodeWorkers },
-            );
-            status.textContent = `sending + receiving "${file.name}" via ${backend}${isPinned ? ' (pinned)' : ''}...`;
+            await session.start(undefined, { scanHz, decodeWorkers });
+            status.textContent = `sending + receiving "${file.name}" via ${backend}...`;
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;
             cleanup();
@@ -454,22 +403,19 @@
           driver?.stop();
 
           const backend = selectedBackend();
-          const isPinned = pinned(backend);
           const file =
             document.getElementById('live-send-file').files?.[0] ?? defaultSampleFile(backend);
-          const { fps, fragmentSize, backendOptions } = tuning();
-          const frames = isPinned
-            ? encodeToFrames(file, { backend: cimbarBackend, fragmentSize, backendOptions })
-            : encodeToFrames(file, { preferredBackend: backend, fragmentSize, backendOptions });
+          const { fps, fragmentSize } = tuning();
+          const frames = encodeToFrames(file, { preferredBackend: backend, fragmentSize });
 
           driver = new DisplayDriver(frames, canvas, {
             fps,
             onFrameSent: (index) => {
-              status.textContent = `sending "${file.name}" via ${backend}${isPinned ? ' (pinned)' : ''} — frame ${index + 1}`;
+              status.textContent = `sending "${file.name}" via ${backend} — frame ${index + 1}`;
             },
           });
           driver.start();
-          status.textContent = `starting "${file.name}" via ${backend}${isPinned ? ' (pinned)' : ''}...`;
+          status.textContent = `starting "${file.name}" via ${backend}...`;
         });
 
         document.getElementById('live-send-stop').addEventListener('click', () => {
@@ -483,26 +429,26 @@
         const video = document.getElementById('live-recv-video');
         const status = document.getElementById('live-recv-status');
         const progress = document.getElementById('live-recv-progress');
+        const metricsEl = document.getElementById('live-recv-metrics');
         const downloadLink = document.getElementById('live-recv-download');
         const resolutionEl = document.getElementById('live-recv-resolution');
         let resolutionPoll;
+        let lastMetrics;
 
         function pollResolution() {
           resolutionPoll = setInterval(() => {
             const res = session.resolution;
             // Checking `res.width` alone is wrong for a portrait capture:
-            // Camera now requests `aspectRatio: 9/16` in portrait (Fix 2),
-            // so a perfectly good 1080p portrait stream reports width=1080,
+            // Camera requests `aspectRatio: 9/16` in portrait, so a
+            // perfectly good 1080p portrait stream reports width=1080,
             // height=1920 — width < height there, not width < some fixed
             // "landscape-shaped" floor. The *smaller* of the two dimensions
-            // is what actually caps how many pixels the roughly-square
-            // Cimbar code gets, regardless of orientation.
+            // is what actually caps how many pixels the roughly-square code
+            // gets, regardless of orientation.
             const shortSide = res ? Math.min(res.width, res.height) : 0;
             resolutionEl.textContent = res
               ? `camera capture resolution: ${res.width}x${res.height}` +
-                (shortSide < 720
-                  ? ' (low — Cimbar needs more pixels per cell than this; see tuning notes)'
-                  : '')
+                (shortSide < 720 ? ' (low — a dense frame may not resolve; see tuning notes)' : '')
               : 'camera capture resolution: negotiating...';
           }, 500);
         }
@@ -511,14 +457,11 @@
           resolutionEl.textContent = '';
         }
 
-        // Built fresh per "Start scanning" click (not once at load) so the
-        // pin-cimbar checkbox's state at click time decides which path is
-        // used: the negotiated `NegotiatingReceiverSession`, or (Fix 5) the
-        // pinned `ReceiverSession(callbacks, cimbarBackend)` +
-        // `{ rawFrames: true }` path that skips negotiation's camera
-        // stop/restart handoff entirely.
+        // Built fresh per "Start scanning" click (not once at load) so each
+        // run starts from a clean decoder rather than one carrying the
+        // previous attempt's partially-decoded state.
         let session;
-        function createSession(isPinned) {
+        function createSession() {
           const callbacks = {
             onBackendResolved: (id) => {
               status.textContent = `sender is using: ${id}`;
@@ -528,8 +471,12 @@
               const goodput = session.goodput;
               status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
+            onMetrics: (m) => {
+              lastMetrics = m;
+              metricsEl.textContent = formatMetrics(m);
+            },
             onComplete: (file) => {
-              status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type})`;
+              status.textContent = `done: "${file.name}" (${file.size} bytes, ${file.type}) — ${formatFinalMetrics(lastMetrics)}`;
 
               const url = URL.createObjectURL(file);
               downloadLink.href = url;
@@ -541,23 +488,19 @@
               status.textContent = `error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
             },
           };
-          return isPinned
-            ? new ReceiverSession(callbacks, cimbarBackend)
-            : new NegotiatingReceiverSession(callbacks);
+          return new NegotiatingReceiverSession(callbacks);
         }
 
         document.getElementById('live-recv-start').addEventListener('click', async () => {
           downloadLink.style.display = 'none';
+          metricsEl.textContent = '';
+          lastMetrics = undefined;
           status.textContent = 'requesting camera...';
-          const isPinned = pinned(selectedBackend());
-          session = createSession(isPinned);
+          session = createSession();
           try {
             const { scanHz, decodeWorkers } = tuning();
-            await session.start(
-              video,
-              isPinned ? { scanHz, rawFrames: true } : { scanHz, decodeWorkers },
-            );
-            status.textContent = `scanning...${isPinned ? ' (pinned)' : ''}`;
+            await session.start(video, { scanHz, decodeWorkers });
+            status.textContent = 'scanning...';
             pollResolution();
           } catch (err) {
             status.textContent = `failed to start: ${err?.message ?? err}`;

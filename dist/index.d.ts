@@ -4,6 +4,20 @@ declare interface BackendDecoder<F extends Frame = Frame> {
     readonly isComplete: boolean;
     /** Estimated completion ratio (0-1), if the backend can produce one. */
     readonly progress?: number;
+    /**
+     * Total envelope bytes the sender is transmitting, if the backend can
+     * report it before the transfer finishes — `undefined` until known (both
+     * fountain backends learn it from the first frame they accept). Wire
+     * bytes, not the original file's size.
+     */
+    readonly totalBytes?: number;
+    /**
+     * Envelope bytes recovered so far, if the backend can report it. Must be
+     * monotonic: `TransferMetrics.bytesPerSecond` differences consecutive
+     * readings, and a reading that went backwards would show as a negative
+     * rate.
+     */
+    readonly bytesReceived?: number;
     /** Envelope-encoded bytes — not yet decompressed or checksum-verified. */
     getResult(): Uint8Array;
 }
@@ -31,7 +45,7 @@ export declare class Camera {
     private static createHiddenVideoElement;
     start(opts?: CameraOptions): Promise<HTMLVideoElement>;
     /**
-     * Best-effort setup for `grabNativeFrame`'s WebCodecs path — silently
+     * Best-effort setup for `grabLumaFrame`'s WebCodecs path — silently
      * leaves `frameReader` unset (rather than throwing) on any unsupported
      * browser, so callers always have the canvas/RGBA fallback available.
      */
@@ -45,36 +59,19 @@ export declare class Camera {
     /** Draws the current video frame to an offscreen canvas and returns it as `ImageData`. */
     grabFrame(): ImageData | undefined;
     /**
-     * Captures one frame preferring the camera's *native* pixel format
-     * (NV12/I420) straight off a `MediaStreamTrackProcessor`-backed
-     * `VideoFrame`, skipping `grabFrame`'s video → `<canvas>` 2D `drawImage`
-     * → `getImageData` RGBA round trip entirely — an unnecessary
-     * color-processing hop for a format like Cimbar's that only needs 2 bits
-     * of color per cell. Falls back to `grabFrame`'s canvas/RGBA path when
-     * the native path is unavailable (unsupported browser) or the captured
-     * `VideoFrame`'s format isn't one `cimbarBackend` recognizes.
-     *
-     * Unlike `grabFrame`, this is `async`: reading a `VideoFrame`'s pixel
-     * planes (`copyTo`) is inherently asynchronous, and `frameReader` is a
-     * push-model `ReadableStream` reader, not a "give me whatever's on
-     * screen right now" pull like `<video>` + `drawImage`.
-     */
-    grabNativeFrame(): Promise<ImageFrame | undefined>;
-    /**
-     * Captures one frame's luminance plane only, straight off the same
-     * native NV12/I420 capture `grabNativeFrame` uses — for a QR decode,
-     * where color carries no information (unlike Cimbar's color-coded
-     * cells), capturing and shipping the other 3/4 of an RGBA frame to the
-     * decode worker is pure waste. Y is always NV12/I420's first plane,
+     * Captures one frame's luminance plane only, straight off a native
+     * NV12/I420 `VideoFrame` — for a QR decode, where color carries no
+     * information at all, capturing and shipping the other 3/4 of an RGBA
+     * frame to the decode worker is pure waste. Y is always NV12/I420's first
+     * plane,
      * tightly packed at offset 0 with stride === width (verified by
-     * `videoFrameToImageFrame`'s `planesArePacked` check before a frame ever
+     * `videoFrameToNativeFrame`'s `planesArePacked` check before a frame ever
      * reaches here), so this needs no separate WebCodecs read — just the
      * leading `width * height` bytes of an already-captured native frame.
      *
      * Returns `undefined` when the native capture path itself is unavailable
-     * (unsupported browser) or failed for any reason, mirroring
-     * `grabNativeFrame`'s own fallback — the caller (`Scanner`) falls back to
-     * `grabFrame`'s canvas/RGBA path in that case.
+     * (unsupported browser) or failed for any reason — the caller (`Scanner`)
+     * falls back to `grabFrame`'s canvas/RGBA path in that case.
      *
      * Uses `.slice()`, not `.subarray()`: a subarray stays a *view* onto
      * `frame.data`'s full NV12/I420 backing buffer, so `postMessage`'s
@@ -89,7 +86,7 @@ export declare class Camera {
         width: number;
         height: number;
     } | undefined>;
-    /** Shared native-capture attempt behind `grabNativeFrame`/`grabLumaFrame` — `undefined` on any failure or if the native path isn't available, with no RGBA fallback of its own (each caller applies its own). */
+    /** The native-capture attempt behind `grabLumaFrame` — `undefined` on any failure or if the native path isn't available, with no RGBA fallback of its own (the caller applies that). */
     private captureNativeFrame;
     /** Tears down the native capture path for the rest of this stream's life, leaving callers on the canvas/RGBA fallback. */
     private disableNativeCapture;
@@ -127,24 +124,23 @@ export declare class Camera {
      */
     private takeLatestFrame;
     /**
-     * `format = 12` (NV12) / `format = 420` (I420) match the pixel-format
-     * codes `_cimbard_scan_extract_decode` expects for those layouts (see
-     * `module.ts`'s `PIXEL_FORMAT_*` constants) -- any other native
-     * `VideoFrame.format` (e.g. `'RGBA'`/`'BGRA'` from a browser/camera combo
-     * that doesn't expose YUV) returns `undefined` so the caller falls back
-     * to the canvas/RGBA path instead of guessing at an unsupported layout.
+     * NV12 and I420 are the two layouts this path recognizes -- any other
+     * native `VideoFrame.format` (e.g. `'RGBA'`/`'BGRA'` from a browser/camera
+     * combo that doesn't expose YUV) returns `undefined` so the caller falls
+     * back to the canvas/RGBA path instead of guessing at an unsupported
+     * layout.
      *
      * Per the WebCodecs spec, `allocationSize()`/`copyTo()` both default
      * their `rect` option to the frame's *visible* rect, not its
      * `codedWidth`/`codedHeight` -- on cameras where those differ (e.g. a
      * 1080-tall visible frame inside a 1088-tall H.264 macroblock-padded
      * coded frame), reporting `codedWidth`/`codedHeight` alongside a buffer
-     * sized for the visible rect desyncs the two, corrupting the chroma-plane
-     * offsets `_cimbard_scan_extract_decode`'s raw `cv::Mat` read assumes.
+     * sized for the visible rect desyncs the two: `grabLumaFrame` would then
+     * slice a luma plane of the wrong length out of the captured buffer.
      * Report `visibleRect`'s dimensions instead, to match the buffer that was
      * actually captured.
      */
-    private videoFrameToImageFrame;
+    private videoFrameToNativeFrame;
 }
 
 export declare interface CameraOptions {
@@ -154,50 +150,19 @@ export declare interface CameraOptions {
      * Requested capture resolution (`ideal`, not a hard minimum — the browser
      * still falls back to whatever the hardware supports). Defaults to a high
      * resolution: with no constraint at all, browsers commonly negotiate down
-     * to something like 640x480, which is fine for QR's large modules but
-     * leaves too few pixels per cell for `cimbarBackend`'s much finer grid to
-     * resolve, even when the code fills the frame.
+     * to something like 640x480, which leaves too few pixels per module to
+     * read a dense QR frame (a large `fragmentSize`, so a high QR version)
+     * reliably, even when the code fills the frame.
      */
     width?: number;
     height?: number;
 }
 
-export declare const cimbarBackend: TransferBackend<ImageFrame>;
-
-export declare interface CimbarEncodeOptions {
-    /**
-     * Symbol resolution (square). Defaults to `DEFAULT_FRAME_SIZE`. The
-     * actual render window/canvas is `frameSize + WINDOW_MARGIN_PX` — see
-     * `initEncoder` — matching libcimbar's own default window sizing.
-     */
-    frameSize?: number;
-    /**
-     * libcimbar encode mode (`_cimbare_configure`'s first argument). Defaults
-     * to `DEFAULT_MODE` (`68`, "mode B") — unchanged from before this field
-     * existed. Set to `67` ("Bm") to trade ~30% throughput for the broader
-     * camera compatibility it's documented upstream as built for; the
-     * receiving `CimbarDecoder` doesn't need to be told which mode was used —
-     * it cycles through candidates per frame until one decodes.
-     */
-    mode?: number;
-    /**
-     * zstd compression level (0-22) for libcimbar's own internal compression
-     * (`_cimbare_configure`'s second argument) — out of that range (the
-     * default, matching every prior call site's hardcoded `-1`) selects
-     * libcimbar's own default level. `cimbarBackend` skips screenferry's own
-     * gzip pass for this backend (see `compressesInternally` on the exported
-     * `TransferBackend`) since gzipped bytes are incompressible and would
-     * make this internal pass pure wasted CPU, so this is the only
-     * compression the payload gets.
-     */
-    compressionLevel?: number;
-}
-
 declare type DecodeCallback = (frame: Frame) => void;
 
 /**
- * Drives an `AsyncIterable<Frame>` (QR frame strings, or an image-based
- * backend's rendered pixel data) onto a canvas at a fixed rate, using
+ * Drives an `AsyncIterable<Frame>` (QR frame strings, or a byte-mode
+ * backend's raw fountain parts) onto a canvas at a fixed rate, using
  * `requestAnimationFrame` (not `setInterval`, whose timer drift compounds
  * badly over a multi-minute transfer). Pauses automatically while the tab
  * is hidden and resumes on return, to avoid burning CPU/battery on an
@@ -215,7 +180,7 @@ export declare class DisplayDriver {
     private frameIndex;
     private lastFrameTime;
     private visibilityListener;
-    /** Guards against a slow render (e.g. Cimbar's WebGL readback) overlapping the next tick's render on the same canvas — see `tick`. */
+    /** Guards against a slow render overlapping the next tick's render on the same canvas — see `tick`. */
     private renderInFlight;
     constructor(source: AsyncIterable<Frame>, canvas: HTMLCanvasElement, opts?: DisplayDriverOptions | undefined);
     start(): void;
@@ -224,7 +189,6 @@ export declare class DisplayDriver {
     private cancelScheduledFrame;
     private tick;
     private renderNextFrame;
-    private renderImageFrame;
 }
 
 export declare interface DisplayDriverOptions extends RenderQrOptions {
@@ -248,25 +212,25 @@ export declare interface EncodeOptions<F extends Frame = string> {
     /** Which transfer backend to use. Defaults to `qrLtBackend` (QR + Luby Transform fountain codes). */
     backend?: TransferBackend<F>;
     /**
-     * Backend-specific encode options (e.g. `CimbarEncodeOptions`), passed
-     * through as-is to `backend.encode()` instead of `{ maxFragmentLength:
-     * fragmentSize }`. Only meaningful together with `backend`/`preferredBackend`
-     * — `qrLtBackend` only understands `maxFragmentLength`.
+     * Backend-specific encode options, passed through as-is to
+     * `backend.encode()` instead of `{ maxFragmentLength: fragmentSize }`.
+     * Only meaningful for a custom `backend` — both backends shipped here
+     * only understand `maxFragmentLength`.
      */
     backendOptions?: unknown;
 }
 
 /**
  * Envelopes and encodes `file` via the chosen backend, yielding raw frames —
- * UR part strings for the default `qrLtBackend`, rendered pixel data
- * (`ImageFrame`) for `cimbarBackend` — not rendered-to-screen output. This
- * layer is UI-agnostic; rendering the returned frames is the caller's
- * choice (see `DisplayDriver` for a canvas-based one). The stream is
- * infinite (both backends are rateless): the caller decides when it has
- * sent enough and stops pulling.
+ * UR part strings for the default `qrLtBackend`, raw `Uint8Array` fountain
+ * parts for `qrBinLtBackend` — not rendered-to-screen output. This layer is
+ * UI-agnostic; rendering the returned frames is the caller's choice (see
+ * `DisplayDriver` for a canvas-based one). The stream is infinite (both
+ * backends are rateless): the caller decides when it has sent enough and
+ * stops pulling.
  *
  * Passing `preferredBackend` instead of `backend` switches to negotiated
- * mode (Stage 11) — see `NegotiatedEncodeOptions`.
+ * mode — see `NegotiatedEncodeOptions`.
  */
 export declare function encodeToFrames(file: Blob, opts: NegotiatedEncodeOptions): AsyncIterable<Frame>;
 
@@ -274,33 +238,14 @@ export declare function encodeToFrames<F extends Frame = string>(file: Blob, opt
 
 /**
  * A single unit of transmitted data. `qrLtBackend`'s frame is a string (a
- * bytewords-text UR part, meant to be rendered as a QR code); `qrBinLtBackend`'s
- * is a raw `Uint8Array` (a fountain part meant to be rendered as *byte-mode*
- * QR data instead — see its doc comment); an image-based backend (e.g.
- * Cimbar) hands back rendered pixel data (`ImageFrame`) instead — kept
- * generic here so the interface doesn't bake in "frames are always text."
+ * bytewords-text UR part, meant to be rendered as a QR code);
+ * `qrBinLtBackend`'s is a raw `Uint8Array` (a fountain part meant to be
+ * rendered as *byte-mode* QR data instead — see its doc comment). Both
+ * supported backends render through the same QR layer; the union stays a
+ * union so a backend's frame shape remains its own concern rather than
+ * something `encodeToFrames`/`StreamDecoder` bake in.
  */
-export declare type Frame = string | ImageFrame | Uint8Array;
-
-/**
- * Raw pixel data for one rendered/captured frame — same layout as DOM
- * `ImageData` (RGBA, row-major, opaque), but not typed against `ImageData`
- * itself so this module stays usable somewhere without the DOM lib (a
- * decode worker, a future non-browser host).
- */
-export declare interface ImageFrame {
-    data: Uint8Array;
-    width: number;
-    height: number;
-    /**
-     * Pixel layout `data` is in. Defaults to `'rgba'` when omitted — every
-     * producer except `Camera.grabNativeFrame`'s WebCodecs path (this
-     * project's own encoders, `DisplayDriver`'s canvas-based sender path,
-     * `Camera.grabFrame`'s canvas/`getImageData` fallback) always emits RGBA,
-     * so only that one native-capture path needs to set this explicitly.
-     */
-    format?: 'rgba' | 'nv12' | 'i420';
-}
+export declare type Frame = string | Uint8Array;
 
 /** Thrown when a fully-reassembled transfer fails its SHA-256 integrity check. */
 export declare class IntegrityError extends Error {
@@ -308,13 +253,15 @@ export declare class IntegrityError extends Error {
 }
 
 /**
- * `encodeToFrames`'s negotiated mode (Stage 11): instead of pinning a
- * backend the receiver must already know, `preferredBackend` picks one —
- * `"auto"` tries `cimbarBackend` if it's usable here, falling back to
- * `qrLtBackend` otherwise — and the stream carries a plain-QR header/beacon
- * frame announcing that choice, so `NegotiatingStreamDecoder`/
- * `NegotiatingReceiverSession` on the receiving end never need to be told
- * which backend is in use. See the README's "Backend negotiation" section.
+ * `encodeToFrames`'s negotiated mode: instead of pinning a backend the
+ * receiver must already know, `preferredBackend` names one — and the stream
+ * carries a plain-QR header/beacon frame announcing that choice, so
+ * `NegotiatingStreamDecoder`/`NegotiatingReceiverSession` on the receiving
+ * end never need to be told which backend is in use. This is what makes it
+ * safe to offer `qr-bin-lt` to a receiver whose library version you don't
+ * control: it either recognizes the announcement or keeps waiting, rather
+ * than silently misreading the data frames. See the README's "Backend
+ * negotiation" section.
  */
 export declare interface NegotiatedEncodeOptions {
     /** Fragment size (payload bytes per frame), passed through to the resolved backend. Ignored if `backendOptions` is set. */
@@ -328,31 +275,30 @@ export declare interface NegotiatedEncodeOptions {
      * this value. Default 10.
      */
     headerIntervalFrames?: number;
-    /** Backend-specific encode options (e.g. `CimbarEncodeOptions`) for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
+    /** Backend-specific encode options for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
     backendOptions?: unknown;
 }
 
 /**
- * Camera-facing counterpart to `encodeToFrames`'s `preferredBackend` mode
- * (Stage 11) — the negotiated equivalent of `ReceiverSession`. Always
- * starts `Scanner` in its default QR text-decode mode (where the header
- * frame always lives); on detecting a non-`qr-lt` backend, restarts
- * `Scanner` in whichever capture mode that backend needs
- * (`scannerOptionsForBackend` — `rawFrames` for an image-based backend like
- * Cimbar, `decodeBytes` for a byte-mode QR backend like `qrBinLtBackend`)
- * and continues the transfer with the right decoder. The caller never
- * chooses a backend up front.
+ * Camera-facing counterpart to `encodeToFrames`'s `preferredBackend` mode —
+ * the negotiated equivalent of `ReceiverSession`. Always starts `Scanner`
+ * in its default QR text-decode mode (where the header frame always
+ * lives); on detecting a non-`qr-lt` backend, restarts `Scanner` in
+ * whichever decode mode that backend needs (`scannerOptionsForBackend` —
+ * `decodeBytes` for a byte-mode QR backend like `qrBinLtBackend`) and
+ * continues the transfer with the right decoder. The caller never chooses a
+ * backend up front.
  *
  * The restart briefly stops and re-acquires the camera — unavoidable given
- * `Scanner`'s current design (see the README's Cimbar section on
- * `rawFrames`) — and, like `cimbarBackend` itself, this path has not been
- * exercised against a real camera in this project's test harness.
+ * `Scanner`'s current design, since the decode mode is fixed at
+ * `Scanner.start()`.
  */
 export declare class NegotiatingReceiverSession {
     private readonly scanner;
     private readonly decoder;
     private readonly callbacks;
     private readonly goodputTracker;
+    private readonly metricsTracker;
     private unsubscribe;
     private settled;
     private videoElement;
@@ -377,8 +323,8 @@ export declare interface NegotiatingReceiverSessionCallbacks extends ReceiverSes
 }
 
 /**
- * Receive-side counterpart to `encodeToFrames`'s `preferredBackend` mode
- * (Stage 11): consumes a heterogeneous `Frame` stream — the sender's
+ * Receive-side counterpart to `encodeToFrames`'s `preferredBackend` mode:
+ * consumes a heterogeneous `Frame` stream — the sender's
  * plain-QR header/beacon frames interleaved with its chosen backend's data
  * frames — auto-detects which backend is in use, and delegates to an
  * internal `StreamDecoder` for it. The caller never needs to know which
@@ -394,6 +340,10 @@ export declare class NegotiatingStreamDecoder {
     get backendId(): string | undefined;
     get progress(): number;
     get isComplete(): boolean;
+    /** See `StreamDecoder.totalBytes` — `undefined` until a backend is resolved and its first frame accepted. */
+    get totalBytes(): number | undefined;
+    /** See `StreamDecoder.bytesReceived` — `0` until a backend is resolved. */
+    get bytesReceived(): number;
     addFrame(frame: Frame): void;
     getResult(): Promise<Blob>;
     private resolve;
@@ -404,18 +354,19 @@ export declare interface NegotiatingStreamDecoderCallbacks {
     onBackendResolved?: (backendId: string) => void;
 }
 
-export declare type PreferredBackend = 'auto' | 'qr-lt' | 'qr-bin-lt' | 'cimbar';
-
 /**
- * Best-effort capability probe: does `cimbarBackend` actually work in this
- * environment? Never throws — a failure (unsupported browser, WASM
- * blocked by CSP, no WebGL, a non-browser host like this project's own
- * Node-based test harness) resolves `false`, so callers can build a
- * fallback UI rather than crash. Only attempts to *load* the WASM module,
- * not a full encode/decode self-test — see the README's Cimbar section
- * for why a deeper self-test isn't done here.
+ * Which backend a sender asks `encodeToFrames` to negotiate with.
+ *
+ * `"auto"` is retained only so existing callers keep compiling; it now
+ * resolves straight to `qrLtBackend`. Prefer naming one explicitly — see
+ * `resolvePreferredBackend`.
+ *
+ * @deprecated `"auto"` — pick `"qr-lt"` (universally decodable) or
+ * `"qr-bin-lt"` (faster, needs a receiver that recognizes it) instead.
+ * There is no longer any device capability left to probe for, so `"auto"`
+ * cannot make a better choice than you can.
  */
-export declare function probeCimbarAvailable(): Promise<boolean>;
+export declare type PreferredBackend = 'auto' | 'qr-lt' | 'qr-bin-lt';
 
 /**
  * The byte-mode QR backend: the same Luby Transform fountain coding as
@@ -476,15 +427,16 @@ export declare const qrLtBackend: TransferBackend<string>;
  * screen-share receiver) — this class is the camera-specific shortcut.
  *
  * Defaults to the QR text-decode path (`qrLtBackend`). To receive a
- * `cimbarBackend` transfer instead, pass `backend: cimbarBackend` here
- * *and* `rawFrames: true` in `start()`'s `ScannerOptions` — the two must
- * agree (nothing checks that for you); see `Scanner.rawFrames`.
+ * `qrBinLtBackend` transfer instead, pass `backend: qrBinLtBackend` here
+ * *and* `decodeBytes: true` in `start()`'s `ScannerOptions` — the two must
+ * agree (nothing checks that for you); see `ScannerOptions.decodeBytes`.
  */
 export declare class ReceiverSession<F extends Frame = string> {
     private readonly scanner;
     private readonly decoder;
     private readonly callbacks;
     private readonly goodputTracker;
+    private readonly metricsTracker;
     private unsubscribe;
     private settled;
     constructor(callbacks?: ReceiverSessionCallbacks, backend?: TransferBackend<F>);
@@ -503,6 +455,15 @@ export declare class ReceiverSession<F extends Frame = string> {
 export declare interface ReceiverSessionCallbacks {
     /** Called after every frame that advances decode progress. */
     onProgress?: (progress: number) => void;
+    /**
+     * Wall-clock throughput, fired alongside every `onProgress`. Separate
+     * from `onProgress` on purpose: that one reports the fountain decoder's
+     * completion *estimate*, this one reports real bytes over real time —
+     * see `TransferMetrics`. The last event before `onComplete` carries the
+     * transfer's final elapsed time, so there's no separate "how long did
+     * that take" callback to wait for.
+     */
+    onMetrics?: (metrics: TransferMetrics) => void;
     onComplete?: (file: Blob) => void;
     /** Includes `IntegrityError` on checksum failure — see `StreamDecoder`. */
     onError?: (error: unknown) => void;
@@ -516,24 +477,24 @@ declare interface RenderQrOptions extends QrEncodeOptions {
 }
 
 /**
- * Resolves `PreferredBackend` to a concrete backend. `"auto"` probes
- * Cimbar's availability and falls back to `qrLtBackend` if it isn't usable
- * here — deliberately never `qrBinLtBackend`, even though it has no extra
- * capability requirement over `qrLtBackend` and is strictly more
- * throughput: `"auto"` exists so a sender always degrades to something a
- * receiver on *any* version of this library can decode, and an older
- * receiver's `backendForId` won't recognize `qr-bin-lt`. Opt into it
- * explicitly (`preferredBackend: 'qr-bin-lt'`, or `backend: qrBinLtBackend`
- * pinned) once you know your receivers support it. `probe` is injectable
- * (defaults to `probeCimbarAvailable`) purely for testing the resolution
- * logic itself without depending on a real WASM/browser environment.
+ * Resolves `PreferredBackend` to a concrete backend.
+ *
+ * Both supported backends run anywhere the library itself does (no WASM
+ * beyond the QR decoder, no GPU, no per-device capability), so this is now
+ * a pure mapping with nothing to probe: `"auto"` resolves to `qrLtBackend`,
+ * the one every version of this library can decode. It is deliberately
+ * never `qrBinLtBackend` — that's strictly more throughput, but an older
+ * receiver's `backendForId` won't recognize the `qr-bin-lt` header id, so
+ * it must be opted into explicitly (`preferredBackend: 'qr-bin-lt'`, or
+ * `backend: qrBinLtBackend` pinned) once you know your receivers support
+ * it.
  */
-export declare function resolvePreferredBackend(preferred: PreferredBackend, probe?: () => Promise<boolean>): Promise<TransferBackend<Frame>>;
+export declare function resolvePreferredBackend(preferred: PreferredBackend): Promise<TransferBackend<Frame>>;
 
 /**
  * Camera-facing scanner: captures frames and reports decoded content (QR
- * text or bytes by default, or raw pixels in `rawFrames` mode). Deliberately
- * knows nothing about fountain parts or transfer state — that's
+ * text, or raw bytes in `decodeBytes` mode). Deliberately knows nothing
+ * about fountain parts or transfer state — that's
  * `StreamDecoder`'s job (Stage 6) — so this stays testable without a camera
  * (worker protocol only) and swappable (e.g. screen-share frames instead of
  * a camera, later) without touching decode logic.
@@ -556,7 +517,6 @@ export declare class Scanner {
     private captureInFlight;
     /** Bumped by `startSampling`/`stop` so a chain outlives neither — see `startSampling`. */
     private samplingGeneration;
-    private pendingRawFrame;
     private decodeBytes;
     private readonly callbacks;
     onDecode(callback: DecodeCallback): Unsubscribe;
@@ -594,7 +554,6 @@ export declare class Scanner {
     private startSampling;
     stop(): void;
     private tick;
-    private tickRaw;
 }
 
 export declare interface ScannerOptions extends CameraOptions {
@@ -605,32 +564,19 @@ export declare interface ScannerOptions extends CameraOptions {
      */
     scanHz?: number;
     /**
-     * When true, skips the built-in QR text-decode worker entirely and
-     * reports each captured camera frame's raw pixels via `onDecode` instead
-     * (as an `ImageFrame`) — for a backend (e.g. Cimbar) whose own decoder
-     * consumes pixels directly rather than pre-decoded text. Pair this with
-     * passing the matching `backend` to `StreamDecoder`/`ReceiverSession`;
-     * nothing checks that the two agree. Defaults to `false` (QR text decode,
-     * v1 behavior, unchanged).
-     */
-    rawFrames?: boolean;
-    /**
-     * When true (and `rawFrames` is false), the built-in QR decode worker
-     * hands back each decoded symbol's raw bytes (`Uint8Array`) via
-     * `onDecode` instead of its text — for a backend (e.g. `qrBinLtBackend`)
-     * whose `Frame` is raw bytes rather than a UR part string. Pair this with
-     * passing the matching `backend` to `StreamDecoder`/`ReceiverSession`;
-     * nothing checks that the two agree. Defaults to `false` (text, v1
-     * behavior, unchanged).
+     * When true, the built-in QR decode worker hands back each decoded
+     * symbol's raw bytes (`Uint8Array`) via `onDecode` instead of its text —
+     * for a backend (e.g. `qrBinLtBackend`) whose `Frame` is raw bytes rather
+     * than a UR part string. Pair this with passing the matching `backend` to
+     * `StreamDecoder`/`ReceiverSession`; nothing checks that the two agree.
+     * Defaults to `false` (text, v1 behavior, unchanged).
      */
     decodeBytes?: boolean;
     /**
-     * Number of concurrent decode workers to spread captured frames across
-     * (ignored when `rawFrames` is true — that path never touches the
-     * decode-worker pool at all). Previously always 1: a 30fps camera fed a
-     * single serialized zxing-wasm decoder, so raising `scanHz` past that
-     * decoder's own throughput bought nothing — captured frames just piled
-     * up waiting on the one worker.
+     * Number of concurrent decode workers to spread captured frames across.
+     * Previously always 1: a 30fps camera fed a single serialized zxing-wasm
+     * decoder, so raising `scanHz` past that decoder's own throughput bought
+     * nothing — captured frames just piled up waiting on the one worker.
      *
      * Defaults to 1, which is exactly the original single-worker behavior —
      * safe on any device, including one too slow to benefit from more.
@@ -668,6 +614,14 @@ export declare class StreamDecoder<F extends Frame = string> {
     get progress(): number;
     get isComplete(): boolean;
     /**
+     * Total envelope bytes the sender is transmitting — `undefined` until the
+     * first accepted frame announces it. Wire bytes, not the reconstructed
+     * file's size; see `TransferMetrics`.
+     */
+    get totalBytes(): number | undefined;
+    /** Envelope bytes recovered so far. Monotonic; see `TransferMetrics`. */
+    get bytesReceived(): number;
+    /**
      * Resolves to a `File` (a `Blob` with the envelope's recovered `name`) so
      * callers can trigger a real download without a separate filename
      * channel — e.g. `URL.createObjectURL(file)` + `<a download>`.
@@ -676,8 +630,8 @@ export declare class StreamDecoder<F extends Frame = string> {
 }
 
 /**
- * Shared interface behind which every transfer backend (QR+LT today, Cimbar
- * later) sits, so `encodeToFrames`/`StreamDecoder` can be backend-agnostic.
+ * Shared interface behind which every transfer backend sits, so
+ * `encodeToFrames`/`StreamDecoder` can be backend-agnostic.
  * `encode`/`createDecoder` operate on envelope bytes and `Frame`s only — they
  * know nothing about rendering frames to a screen or scanning them off a
  * camera; that stays a backend-specific concern above this interface.
@@ -686,30 +640,73 @@ export declare interface TransferBackend<F extends Frame = Frame> {
     readonly id: string;
     /**
      * When true, `buildEnvelope` skips its own gzip pass for this backend —
-     * for a backend (e.g. Cimbar) that already compresses internally, gzip
-     * on top is wasted CPU on already-incompressible bytes. Defaults to
-     * `false`/unset (gzip as before) for any backend that doesn't set it.
+     * for a backend that already compresses internally, gzip on top is wasted
+     * CPU on already-incompressible bytes. Defaults to `false`/unset (gzip as
+     * before) for any backend that doesn't set it; neither backend shipped
+     * here sets it today.
      */
     readonly compressesInternally?: boolean;
     encode(bytes: Uint8Array, opts?: unknown): AsyncIterable<F>;
     createDecoder(): BackendDecoder<F>;
 }
 
+/**
+ * Wall-clock throughput for a receive in progress: how fast bytes are
+ * actually arriving, and how long it has taken so far.
+ *
+ * Deliberately separate from `onProgress`, which reports the fountain
+ * decoder's own completion *estimate*. The two answer different questions —
+ * "how close am I to done" vs. "how fast is this link" — and mixing them
+ * would make both worse: `onProgress` is a redundancy-adjusted heuristic
+ * that clamps near the end, while these numbers are real bytes over real
+ * milliseconds. See `src/backends/fountain-bytes.ts`.
+ */
+export declare interface TransferMetrics {
+    /**
+     * Envelope bytes recovered so far. These are *wire* bytes — the (usually
+     * gzipped) payload plus the envelope header, as the backend frames it —
+     * not the reconstructed file's size, which is only known once the
+     * transfer completes and can be either larger (compression) or a little
+     * smaller (framing overhead) than this. Monotonic.
+     */
+    bytesReceived: number;
+    /**
+     * Total envelope bytes the sender is transmitting. `null` until the first
+     * frame is accepted, since the count comes from the frames themselves —
+     * there is no out-of-band channel to learn it any earlier. Same wire-byte
+     * caveat as `bytesReceived`.
+     */
+    totalBytes: number | null;
+    /**
+     * Instantaneous rate over a short trailing window (~2s), not a cumulative
+     * average. A cumulative average never recovers from a stall — an
+     * autofocus hunt or a few seconds of a badly-aimed camera drags it down
+     * for the rest of the transfer, which makes it useless for the thing a
+     * live readout is for: telling whether what you just changed (moving
+     * closer, raising `fps`, switching backend) is helping *now*. Divide
+     * `bytesReceived` by `elapsedMs` yourself for the cumulative figure —
+     * that is the honest number for a final "took N seconds at M KB/s"
+     * summary.
+     *
+     * `0` until at least two samples exist. Also note this only updates when
+     * a frame is accepted: during a total stall the last value persists
+     * rather than decaying toward zero, and the drop shows up on the first
+     * frame that gets through.
+     */
+    bytesPerSecond: number;
+    /** Milliseconds since `start()` on the session that owns this tracker. */
+    elapsedMs: number;
+}
+
 declare type Unsubscribe = () => void;
 
 export { }
-
-
-declare global {
-    var Module: CimbarModuleConfig | undefined;
-}
-
 
 declare global {
     /**
      * Part of the "Insertable Streams for MediaStreamTrack" API — not yet in
      * TS's own DOM lib (unlike `VideoFrame`/`VideoPixelFormat`, which are).
-     * Minimal ambient shape for what `Camera.grabNativeFrame` uses: wrapping
+     * Minimal ambient shape for what `Camera`'s native capture path uses: wrapping
      * a live camera track's `MediaStreamVideoTrack` as a `ReadableStream` of
      * `VideoFrame`s in the browser's *native* capture format (NV12/I420 on
      * most platforms), with no canvas/RGBA conversion in between.

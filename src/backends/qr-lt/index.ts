@@ -16,6 +16,14 @@ class QrLtDecoder implements BackendDecoder<string> {
     return this.decoder.progress;
   }
 
+  get totalBytes(): number | undefined {
+    return this.decoder.totalBytes;
+  }
+
+  get bytesReceived(): number {
+    return this.decoder.bytesReceived;
+  }
+
   getResult(): Uint8Array {
     return this.decoder.getResult();
   }

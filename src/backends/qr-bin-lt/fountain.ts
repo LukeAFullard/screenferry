@@ -2,6 +2,7 @@
 import '../../env/polyfills';
 import FountainEncoderImport, { FountainEncoderPart } from '@ngraveio/bc-ur/dist/fountainEncoder';
 import FountainDecoderImport from '@ngraveio/bc-ur/dist/fountainDecoder';
+import { readExpectedMessageLength, recoveredByteCount } from '../fountain-bytes';
 
 /**
  * `@ngraveio/bc-ur`'s `dist/fountain{Encoder,Decoder}.js` are compiled
@@ -104,6 +105,31 @@ export class FountainByteDecoder {
    */
   get progress(): number {
     return this.decoder.estimatedPercentComplete();
+  }
+
+  /**
+   * Total envelope bytes this stream is carrying, announced by every
+   * fountain part's header — `undefined` until the first part is accepted.
+   * These are *wire* bytes (the gzipped payload plus the envelope header),
+   * not the original file's size, which is only readable once the envelope
+   * itself is reassembled.
+   */
+  get totalBytes(): number | undefined {
+    return readExpectedMessageLength(this.decoder);
+  }
+
+  /**
+   * Envelope bytes recovered so far — see `recoveredByteCount`, which is
+   * accurate to within one fragment. Once complete, everything arrived by
+   * definition, so report the total exactly rather than that rounding.
+   */
+  get bytesReceived(): number {
+    if (this.isComplete()) return this.totalBytes ?? 0;
+    return recoveredByteCount(
+      this.totalBytes,
+      this.decoder.expectedPartCount(),
+      this.decoder.getReceivedPartIndexes().length,
+    );
   }
 
   /** Envelope-encoded bytes — not yet decompressed or checksum-verified. */
