@@ -117,7 +117,9 @@ for (;;) {
   }
   safeFragmentLengthChunked--;
   if (safeFragmentLengthChunked < 20) {
-    throw new Error('qr-capacity: chunked worst-case search underflowed below the minimum fragment length');
+    throw new Error(
+      'qr-capacity: chunked worst-case search underflowed below the minimum fragment length',
+    );
   }
 }
 

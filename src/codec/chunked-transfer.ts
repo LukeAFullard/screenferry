@@ -127,10 +127,7 @@ export async function* encodeChunkedEnvelope<F extends Frame = Frame>(
 
   const iterators = await Promise.all(
     chunks.map((chunkBytes) => {
-      const stream = backend.encode(
-        chunkBytes,
-        opts?.backendOptions ?? { maxFragmentLength },
-      );
+      const stream = backend.encode(chunkBytes, opts?.backendOptions ?? { maxFragmentLength });
       return stream[Symbol.asyncIterator]();
     }),
   );
