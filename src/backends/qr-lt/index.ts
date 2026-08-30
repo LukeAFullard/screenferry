@@ -44,7 +44,12 @@ export const qrLtBackend: TransferBackend<string> = {
   },
 };
 
-export { createFountainEncoder, FountainDecoder } from './fountain';
+export {
+  createFountainEncoder,
+  FountainDecoder,
+  DEFAULT_MAX_FRAGMENT_LENGTH,
+  DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED,
+} from './fountain';
 
 export { computeQrModules, DEFAULT_ECC_LEVEL, DEFAULT_MAX_QR_VERSION } from './encode';
 export type { EccLevel, QrEncodeOptions, QrModuleGrid } from './encode';

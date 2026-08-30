@@ -65,4 +65,9 @@ export const qrBinLtBackend: TransferBackend<Uint8Array> = {
   },
 };
 
-export { createFountainEncoder, FountainByteDecoder } from './fountain';
+export {
+  createFountainEncoder,
+  FountainByteDecoder,
+  DEFAULT_MAX_FRAGMENT_LENGTH,
+  DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED,
+} from './fountain';

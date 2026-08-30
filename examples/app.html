@@ -556,6 +556,9 @@
           const senderDriver = new DisplayDriver(senderFrames, senderCanvas, {
             fps,
             maskPattern: maskPinning ? 0 : -1,
+            onError: (err) => {
+              status.textContent = `sender render error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
+            },
           });
           senderDriver.start();
 
@@ -648,6 +651,9 @@
             maskPattern: maskPinning ? 0 : -1,
             onFrameSent: (index) => {
               status.textContent = `sending "${file.name}" via ${backend} — frame ${index + 1}`;
+            },
+            onError: (err) => {
+              status.textContent = `render error (${err?.name ?? 'Error'}): ${err?.message ?? err}`;
             },
           });
           driver.start();

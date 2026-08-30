@@ -5,7 +5,7 @@
 // Re-run this (`npm run qr-bin:capacity`) whenever the ECC level, max
 // version, or the fountain part's CBOR shape changes, and feed the printed
 // number back into src/backends/qr-bin-lt/fountain.ts's
-// DEFAULT_MAX_FRAGMENT_LENGTH.
+// DEFAULT_MAX_FRAGMENT_LENGTH and DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED.
 //
 // Unlike qr-lt's UR part strings, a raw fountain part here has no bytewords
 // text encoding (2 chars/byte) and no `ur:type/seqNum-seqLength/` URI
@@ -50,6 +50,14 @@ function worstCasePartForFragmentLength(fragmentLength) {
   return encoder.nextPart().cbor();
 }
 
+function worstCaseChunkedPartForFragmentLength(fragmentLength) {
+  const cbor = worstCasePartForFragmentLength(fragmentLength);
+  const tagged = new Uint8Array(cbor.length + 1);
+  tagged[0] = 254;
+  tagged.set(cbor, 1);
+  return tagged;
+}
+
 // Phase 1: fast binary search over a small, cheap sample.
 let low = 20;
 let high = 3000;
@@ -85,9 +93,33 @@ for (;;) {
   }
 }
 
+// Phase 2 (chunked): decrement against the 1-byte chunk-tagged worst-case part until it fits.
+let safeFragmentLengthChunked = safeFragmentLength;
+let safeVersionChunked = 0;
+for (;;) {
+  const { fits, version } = fitsQrVersion(
+    worstCaseChunkedPartForFragmentLength(safeFragmentLengthChunked),
+  );
+  if (fits) {
+    safeVersionChunked = version;
+    break;
+  }
+  safeFragmentLengthChunked--;
+  if (safeFragmentLengthChunked < 20) {
+    throw new Error(
+      'qr-bin-capacity: chunked worst-case search underflowed below the minimum fragment length',
+    );
+  }
+}
+
 console.log(`ECC level: ${ECC_LEVEL}, max QR version: ${MAX_VERSION}`);
 console.log(`Phase 1 (small-sample) estimate: ${estimate} bytes`);
 console.log(
   `Phase 2 (worst-case seqNum=${WORST_CASE_SEQNUM}, seqLength=${WORST_CASE_FRAGMENT_COUNT}) safe length: ${safeFragmentLength} bytes (QR version ${safeVersion})`,
 );
-console.log('Feed this into src/backends/qr-bin-lt/fountain.ts DEFAULT_MAX_FRAGMENT_LENGTH.');
+console.log(
+  `Phase 2 (chunked 1-byte tagged worst-case seqNum=${WORST_CASE_SEQNUM}, seqLength=${WORST_CASE_FRAGMENT_COUNT}) safe length: ${safeFragmentLengthChunked} bytes (QR version ${safeVersionChunked})`,
+);
+console.log(
+  'Feed these into src/backends/qr-bin-lt/fountain.ts DEFAULT_MAX_FRAGMENT_LENGTH and DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED.',
+);
