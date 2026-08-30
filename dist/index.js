@@ -11615,6 +11615,6 @@ var fa = class {
 	}
 };
 //#endregion
-export { Pi as Camera, Ai as ChunkedTransferDecoder, sa as DisplayDriver, Se as IntegrityError, ha as NegotiatingReceiverSession, ma as NegotiatingStreamDecoder, pa as ReceiverSession, Ei as RoundRobinChunkPicker, zi as Scanner, fa as StreamDecoder, Di as WeightedChunkPicker, Oi as computeAutoChunkCount, ki as encodeChunkedEnvelope, da as encodeToFrames, Qi as qrBinLtBackend, xi as qrLtBackend, aa as resolvePreferredBackend };
+export { Pi as Camera, Ai as ChunkedTransferDecoder, sa as DisplayDriver, Se as IntegrityError, ha as NegotiatingReceiverSession, ma as NegotiatingStreamDecoder, pa as ReceiverSession, Ei as RoundRobinChunkPicker, zi as Scanner, fa as StreamDecoder, Di as WeightedChunkPicker, Si as buildEnvelope, Oi as computeAutoChunkCount, ki as encodeChunkedEnvelope, da as encodeToFrames, Qi as qrBinLtBackend, xi as qrLtBackend, aa as resolvePreferredBackend };
 
 //# sourceMappingURL=index.js.map

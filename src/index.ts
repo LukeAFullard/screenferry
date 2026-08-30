@@ -168,6 +168,7 @@ export async function* encodeToFrames(
 export { DisplayDriver } from './backends/display-driver';
 export type { DisplayDriverOptions } from './backends/display-driver';
 
+export { buildEnvelope } from './codec/transfer';
 export {
   RoundRobinChunkPicker,
   WeightedChunkPicker,

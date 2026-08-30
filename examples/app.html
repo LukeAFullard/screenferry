@@ -133,18 +133,6 @@
       <label><input type="checkbox" id="feature-boost" /> Boost mode (interactive priority)</label>
     </p>
 
-    <div id="sender-grid-container" style="display: none; margin-bottom: 1rem">
-      <p style="margin: 0 0 0.25rem 0">
-        <small>Sender Boost Grid (tap to mark chunk done/undone):</small>
-      </p>
-      <div id="sender-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
-    </div>
-
-    <div id="receiver-grid-container" style="display: none; margin-bottom: 1rem">
-      <p style="margin: 0 0 0.25rem 0"><small>Receiver Progress Grid:</small></p>
-      <div id="receiver-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
-    </div>
-
     <section>
       <h2>1. Self-test (no camera needed)</h2>
       <p>
@@ -158,6 +146,16 @@
         <input type="file" id="self-test-file" />
         <button id="self-test-start">Run self-test</button>
       </p>
+      <div id="self-test-sender-grid-container" style="display: none; margin-bottom: 0.5rem">
+        <p style="margin: 0 0 0.25rem 0">
+          <small>Sender Boost Grid (tap to mark chunk done/undone):</small>
+        </p>
+        <div id="self-test-sender-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
+      </div>
+      <div id="self-test-receiver-grid-container" style="display: none; margin-bottom: 0.5rem">
+        <p style="margin: 0 0 0.25rem 0"><small>Receiver Progress Grid:</small></p>
+        <div id="self-test-receiver-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
+      </div>
       <div class="row">
         <div>
           <p><small>Sender canvas</small></p>
@@ -188,6 +186,12 @@
         <button id="live-send-start">Start</button>
         <button id="live-send-stop">Stop</button>
       </p>
+      <div id="live-send-grid-container" style="display: none; margin-bottom: 0.5rem">
+        <p style="margin: 0 0 0.25rem 0">
+          <small>Sender Boost Grid (tap to mark chunk done/undone):</small>
+        </p>
+        <div id="live-send-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
+      </div>
       <p>
         The canvas below displays at its native resolution (drag its bottom-right corner to resize
         further). Avoid shrinking it — a downscaled code is harder for the receiving camera to
@@ -210,6 +214,10 @@
         <button id="live-recv-start">Start scanning</button>
         <button id="live-recv-stop">Stop</button>
       </p>
+      <div id="live-recv-grid-container" style="display: none; margin-bottom: 0.5rem">
+        <p style="margin: 0 0 0.25rem 0"><small>Receiver Progress Grid:</small></p>
+        <div id="live-recv-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
+      </div>
       <progress id="live-recv-progress" value="0" max="1"></progress>
       <p class="metrics" id="live-recv-metrics"></p>
       <pre id="live-recv-status">idle</pre>
@@ -272,6 +280,8 @@
         DisplayDriver,
         NegotiatingReceiverSession,
         WeightedChunkPicker,
+        computeAutoChunkCount,
+        buildEnvelope,
       } from '../dist/index.js';
 
       function selectedBackend() {
@@ -334,16 +344,38 @@
       function updateGridVisibility() {
         const chunked = document.getElementById('feature-chunked').checked;
         const boost = document.getElementById('feature-boost').checked;
-        document.getElementById('sender-grid-container').style.display =
-          chunked && boost ? 'block' : 'none';
-        document.getElementById('receiver-grid-container').style.display = chunked
-          ? 'block'
-          : 'none';
+
+        const senderContainers = [
+          document.getElementById('self-test-sender-grid-container'),
+          document.getElementById('live-send-grid-container'),
+        ];
+        senderContainers.forEach((el) => {
+          if (el) el.style.display = chunked && boost ? 'block' : 'none';
+        });
+
+        const receiverContainers = [
+          document.getElementById('self-test-receiver-grid-container'),
+          document.getElementById('live-recv-grid-container'),
+        ];
+        receiverContainers.forEach((el) => {
+          if (el) el.style.display = chunked ? 'block' : 'none';
+        });
       }
       updateGridVisibility();
 
-      function renderReceiverGrid(state) {
-        const container = document.getElementById('receiver-chunk-grid');
+      async function computeEffectiveChunkCountForFile(file, chunkCountSetting, fragmentSize) {
+        if (typeof chunkCountSetting === 'number') {
+          return Math.max(1, Math.floor(chunkCountSetting));
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const filename = 'name' in file && typeof file.name === 'string' ? file.name : 'file';
+        const mimeType = file.type || 'application/octet-stream';
+        const envelope = await buildEnvelope(bytes, { filename, mimeType });
+        return computeAutoChunkCount(envelope.length, fragmentSize);
+      }
+
+      function renderReceiverGrid(containerId, state) {
+        const container = document.getElementById(containerId);
         if (!container) return;
         container.innerHTML = '';
         const count = state.chunkCount || 1;
@@ -364,13 +396,12 @@
         }
       }
 
-      function setupSenderGrid(chunkCount, onToggle) {
-        const container = document.getElementById('sender-chunk-grid');
+      function setupSenderGrid(containerId, chunkCount, onToggle) {
+        const container = document.getElementById(containerId);
         if (!container) return;
         container.innerHTML = '';
         const markedDone = new Set();
-        const count = typeof chunkCount === 'number' ? chunkCount : 4; // fallback UI count if auto
-        for (let i = 0; i < count; i++) {
+        for (let i = 0; i < chunkCount; i++) {
           const box = document.createElement('div');
           box.style.width = '28px';
           box.style.height = '28px';
@@ -497,8 +528,13 @@
 
           let picker;
           if (chunked && boost) {
-            picker = new WeightedChunkPicker(typeof chunkCount === 'number' ? chunkCount : 4);
-            setupSenderGrid(chunkCount, (doneSet) => {
+            const effectiveCount = await computeEffectiveChunkCountForFile(
+              file,
+              chunkCount,
+              fragmentSize,
+            );
+            picker = new WeightedChunkPicker(effectiveCount);
+            setupSenderGrid('self-test-sender-chunk-grid', effectiveCount, (doneSet) => {
               picker.setPriority(doneSet, 0.1);
             });
           }
@@ -533,7 +569,7 @@
               status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
             onChunkProgress: (state) => {
-              renderReceiverGrid(state);
+              renderReceiverGrid('self-test-receiver-chunk-grid', state);
             },
             onMetrics: (m) => {
               lastMetrics = m;
@@ -572,7 +608,7 @@
         const status = document.getElementById('live-send-status');
         let driver;
 
-        document.getElementById('live-send-start').addEventListener('click', () => {
+        document.getElementById('live-send-start').addEventListener('click', async () => {
           driver?.stop();
 
           const backend = selectedBackend();
@@ -582,8 +618,13 @@
 
           let picker;
           if (chunked && boost) {
-            picker = new WeightedChunkPicker(typeof chunkCount === 'number' ? chunkCount : 4);
-            setupSenderGrid(chunkCount, (doneSet) => {
+            const effectiveCount = await computeEffectiveChunkCountForFile(
+              file,
+              chunkCount,
+              fragmentSize,
+            );
+            picker = new WeightedChunkPicker(effectiveCount);
+            setupSenderGrid('live-send-chunk-grid', effectiveCount, (doneSet) => {
               picker.setPriority(doneSet, 0.1);
             });
           }
@@ -661,7 +702,7 @@
               status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
             },
             onChunkProgress: (state) => {
-              renderReceiverGrid(state);
+              renderReceiverGrid('live-recv-chunk-grid', state);
             },
             onMetrics: (m) => {
               lastMetrics = m;

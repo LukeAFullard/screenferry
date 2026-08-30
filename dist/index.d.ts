@@ -23,6 +23,21 @@ declare interface BackendDecoder<F extends Frame = Frame> {
 }
 
 /**
+ * Builds the wire envelope for `bytes`: hashes the original bytes, compresses
+ * if that's smaller, and prepends the metadata header. The result is what
+ * gets fountain-encoded, not the raw file bytes.
+ *
+ * `skipCompression` (set for a backend with `compressesInternally: true`)
+ * skips the gzip pass entirely rather than just discarding its result — such
+ * a backend already compresses the envelope itself, so running gzip first
+ * would both waste CPU and hand it already-incompressible bytes. Neither
+ * backend shipped here sets it.
+ */
+export declare function buildEnvelope(bytes: Uint8Array, meta: FileMeta, opts?: {
+    skipCompression?: boolean;
+}): Promise<Uint8Array>;
+
+/**
  * Wraps `getUserMedia` and frame extraction. If no `<video>` element is
  * supplied, creates and manages a hidden one internally purely for frame
  * sampling; a caller that wants a live preview (e.g. `Scanner.start`) can
@@ -158,6 +173,15 @@ export declare interface CameraOptions {
     height?: number;
 }
 
+/**
+ * Receives and reassembles multi-chunk fountain transfers.
+ *
+ * Note: Fountain peeling decode (`receiveTaggedFrame` / `addFrame`) executes
+ * serially on the main thread for each chunk rather than in parallel across
+ * workers. Multi-chunk transfer still improves performance by reducing total
+ * peeling computation complexity (O(K log(K/N)) vs O(K log K)) and bounding
+ * per-chunk memory overhead during high-symbol transfers.
+ */
 export declare class ChunkedTransferDecoder<F extends Frame = Frame> {
     private readonly decoders;
     private readonly chunkCount;
