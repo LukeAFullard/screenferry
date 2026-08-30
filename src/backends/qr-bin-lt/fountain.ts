@@ -44,7 +44,15 @@ const FountainDecoder = resolveDefaultExport(FountainDecoderImport);
  * `ur:type/seqNum-seqLength/` URI wrapper — this is the whole point of this
  * backend existing alongside `qr-lt`.
  */
-const DEFAULT_MAX_FRAGMENT_LENGTH = 2931;
+export const DEFAULT_MAX_FRAGMENT_LENGTH = 2931;
+
+/**
+ * Fragment length (bytes) used for chunked transfers (`chunkCount > 1`).
+ * Empirically measured by `npm run qr-bin:capacity` (see `scripts/qr-bin-capacity.mjs`)
+ * as the largest fragment whose 1-byte chunk-tagged fountain part still fits
+ * a byte-mode QR code at version <= 40, ECC L.
+ */
+export const DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED = 2930;
 
 /**
  * Drives a Luby Transform fountain encoder over `bytes`, yielding raw

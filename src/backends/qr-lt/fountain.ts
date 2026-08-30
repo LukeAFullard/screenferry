@@ -30,7 +30,15 @@ import {
  * directly, so 2111 already includes that margin — don't bump it back up
  * to whatever a naive single-sample search reports.
  */
-const DEFAULT_MAX_FRAGMENT_LENGTH = 2111;
+export const DEFAULT_MAX_FRAGMENT_LENGTH = 2111;
+
+/**
+ * Fragment length (bytes) used for chunked transfers (`chunkCount > 1`).
+ * Empirically measured by `npm run qr:capacity` (see `scripts/qr-capacity.mjs`)
+ * as the largest fragment that keeps a rendered UR part tagged with the maximum
+ * chunk tag (`c254:`) fitting QR version <= 40 at ECC L.
+ */
+export const DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED = 2108;
 
 /**
  * Drives a Luby Transform fountain encoder over `bytes`, yielding UR-encoded

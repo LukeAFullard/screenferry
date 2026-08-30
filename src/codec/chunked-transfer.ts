@@ -1,5 +1,6 @@
 import { unwrapEnvelope, type DecodedFile } from './transfer';
-import { qrLtBackend } from '../backends/qr-lt';
+import { qrLtBackend, DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED } from '../backends/qr-lt';
+import { DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED as DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED_BIN } from '../backends/qr-bin-lt';
 import type { BackendDecoder, Frame, TransferBackend } from '../backends/types';
 import { tagFrameWithChunk, untagFrameWithChunk } from './frame-tag';
 
@@ -107,6 +108,13 @@ export async function* encodeChunkedEnvelope<F extends Frame = Frame>(
     return;
   }
 
+  const defaultChunkedMaxFragment =
+    backend.id === 'qr-bin-lt'
+      ? DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED_BIN
+      : DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED;
+
+  const maxFragmentLength = opts?.maxFragmentLength ?? defaultChunkedMaxFragment;
+
   const envelopeLen = envelope.length;
   const chunkSize = Math.ceil(envelopeLen / chunkCount);
   const chunks: Uint8Array[] = [];
@@ -121,7 +129,7 @@ export async function* encodeChunkedEnvelope<F extends Frame = Frame>(
     chunks.map((chunkBytes) => {
       const stream = backend.encode(
         chunkBytes,
-        opts?.backendOptions ?? { maxFragmentLength: opts?.maxFragmentLength },
+        opts?.backendOptions ?? { maxFragmentLength },
       );
       return stream[Symbol.asyncIterator]();
     }),

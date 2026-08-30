@@ -2,7 +2,8 @@
 // rendered UR part string still fits a QR code at version <= 40, ECC L.
 // Re-run this (`npm run qr:capacity`) whenever the ECC level, max version,
 // or the UR encoding scheme changes, and feed the printed number back into
-// src/backends/qr-lt/fountain.ts's DEFAULT_MAX_FRAGMENT_LENGTH.
+// src/backends/qr-lt/fountain.ts's DEFAULT_MAX_FRAGMENT_LENGTH and
+// DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED.
 import { UR, UREncoder } from '@ngraveio/bc-ur';
 import { encode as uqrEncode } from 'uqr';
 
@@ -103,9 +104,31 @@ for (;;) {
   }
 }
 
+// Phase 2 (chunked): search for worst-case-shaped part prepended with the longest
+// possible chunk tag (`c254:`, 5 characters, since chunkCount is capped at 255).
+let safeFragmentLengthChunked = safeFragmentLength;
+let safeVersionChunked = 0;
+for (;;) {
+  const taggedText = `c254:${worstCasePartForFragmentLength(safeFragmentLengthChunked)}`;
+  const { fits, version } = fitsQrVersion(taggedText);
+  if (fits) {
+    safeVersionChunked = version;
+    break;
+  }
+  safeFragmentLengthChunked--;
+  if (safeFragmentLengthChunked < 20) {
+    throw new Error('qr-capacity: chunked worst-case search underflowed below the minimum fragment length');
+  }
+}
+
 console.log(`ECC level: ${ECC_LEVEL}, max QR version: ${MAX_VERSION}`);
 console.log(`Phase 1 (small-sample) estimate: ${estimate} bytes`);
 console.log(
   `Phase 2 (worst-case seqNum=${WORST_CASE_SEQNUM}, seqLength=${WORST_CASE_FRAGMENT_COUNT}) safe length: ${safeFragmentLength} bytes (QR version ${safeVersion})`,
 );
-console.log('Feed this into src/backends/qr-lt/fountain.ts DEFAULT_MAX_FRAGMENT_LENGTH.');
+console.log(
+  `Phase 2 (chunked c254: worst-case seqNum=${WORST_CASE_SEQNUM}, seqLength=${WORST_CASE_FRAGMENT_COUNT}) safe length: ${safeFragmentLengthChunked} bytes (QR version ${safeVersionChunked})`,
+);
+console.log(
+  'Feed these into src/backends/qr-lt/fountain.ts DEFAULT_MAX_FRAGMENT_LENGTH and DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED.',
+);

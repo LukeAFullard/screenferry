@@ -10,6 +10,8 @@ export interface DisplayDriverOptions extends RenderQrOptions {
    * see the receiver's actual progress (no feedback channel, by design).
    */
   onFrameSent?: (index: number) => void;
+  /** Called if rendering a frame throws an error (e.g. QR code capacity overflow). */
+  onError?: (error: unknown) => void;
 }
 
 const DEFAULT_FPS = 10;
@@ -25,6 +27,7 @@ const DEFAULT_FPS = 10;
 export class DisplayDriver {
   private readonly fps: number;
   private readonly onFrameSent?: (index: number) => void;
+  private readonly onError?: (error: unknown) => void;
 
   private iterator: AsyncIterator<Frame> | undefined;
   private running = false;
@@ -42,6 +45,7 @@ export class DisplayDriver {
   ) {
     this.fps = opts?.fps ?? DEFAULT_FPS;
     this.onFrameSent = opts?.onFrameSent;
+    this.onError = opts?.onError;
   }
 
   start(): void {
@@ -117,14 +121,26 @@ export class DisplayDriver {
   private async renderNextFrame(): Promise<void> {
     if (!this.iterator) return;
 
-    const { value, done } = await this.iterator.next();
+    let nextResult: IteratorResult<Frame>;
+    try {
+      nextResult = await this.iterator.next();
+    } catch (err) {
+      this.onError?.(err);
+      return;
+    }
+
+    const { value, done } = nextResult;
     if (done || value === undefined || !this.running) return;
 
     // A string (`qrLtBackend`'s UR part text) or raw bytes
     // (`qrBinLtBackend`'s fountain part, rendered as byte-mode QR data)
     // both go through the same QR renderer — see `renderQrToCanvas`.
-    renderQrToCanvas(value, this.canvas, this.opts);
-    this.onFrameSent?.(this.frameIndex);
-    this.frameIndex++;
+    try {
+      renderQrToCanvas(value, this.canvas, this.opts);
+      this.onFrameSent?.(this.frameIndex);
+      this.frameIndex++;
+    } catch (err) {
+      this.onError?.(err);
+    }
   }
 }

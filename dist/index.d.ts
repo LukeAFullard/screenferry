@@ -226,6 +226,7 @@ export declare class DisplayDriver {
     private readonly opts?;
     private readonly fps;
     private readonly onFrameSent?;
+    private readonly onError?;
     private iterator;
     private running;
     private rafHandle;
@@ -252,6 +253,8 @@ export declare interface DisplayDriverOptions extends RenderQrOptions {
      * see the receiver's actual progress (no feedback channel, by design).
      */
     onFrameSent?: (index: number) => void;
+    /** Called if rendering a frame throws an error (e.g. QR code capacity overflow). */
+    onError?: (error: unknown) => void;
 }
 
 declare type EccLevel = 'L' | 'M' | 'Q' | 'H';
