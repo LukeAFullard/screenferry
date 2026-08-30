@@ -1,13 +1,19 @@
 import './env/polyfills';
-import { encodeFileToParts, TransferDecoder } from './codec/transfer';
+import { buildEnvelope } from './codec/transfer';
+import {
+  ChunkedTransferDecoder,
+  computeAutoChunkCount,
+  encodeChunkedEnvelope,
+  type ChunkPicker,
+} from './codec/chunked-transfer';
 import { Scanner, type ScannerOptions } from './scan/index';
 import { GoodputTracker } from './scan/goodput';
 import { TransferMetricsTracker, type TransferMetrics } from './scan/metrics';
 import type { Frame, TransferBackend } from './backends/types';
 import {
   backendForId,
-  decodeHeaderFrame,
   encodeHeaderFrame,
+  parseHeaderFrame,
   resolvePreferredBackend,
   scannerOptionsForBackend,
   type PreferredBackend,
@@ -28,6 +34,9 @@ export interface EncodeOptions<F extends Frame = string> {
    * only understand `maxFragmentLength`.
    */
   backendOptions?: unknown;
+  chunked?: boolean;
+  chunkCount?: number | 'auto';
+  picker?: ChunkPicker;
 }
 
 /**
@@ -55,6 +64,9 @@ export interface NegotiatedEncodeOptions {
   headerIntervalFrames?: number;
   /** Backend-specific encode options for whichever backend gets resolved — see `EncodeOptions.backendOptions`. */
   backendOptions?: unknown;
+  chunked?: boolean;
+  chunkCount?: number | 'auto';
+  picker?: ChunkPicker;
 }
 
 const DEFAULT_HEADER_INTERVAL_FRAMES = 10;
@@ -70,9 +82,10 @@ async function* interleaveHeaderFrames(
   dataFrames: AsyncIterable<Frame>,
   backendId: string,
   intervalFrames: number,
+  chunkCount?: number,
 ): AsyncIterable<Frame> {
   const iterator = dataFrames[Symbol.asyncIterator]();
-  const header = encodeHeaderFrame(backendId);
+  const header = encodeHeaderFrame(backendId, { chunkCount });
   let index = 0;
 
   for (;;) {
@@ -109,32 +122,60 @@ export async function* encodeToFrames(
   const filename = 'name' in file && typeof file.name === 'string' ? file.name : 'file';
   const mimeType = file.type || 'application/octet-stream';
 
+  const backend =
+    opts && isNegotiatedEncodeOptions(opts)
+      ? await resolvePreferredBackend(opts.preferredBackend)
+      : (opts?.backend ?? qrLtBackend);
+
+  const envelope = await buildEnvelope(
+    bytes,
+    { filename, mimeType },
+    { skipCompression: backend.compressesInternally },
+  );
+
+  let effectiveChunkCount = 1;
+  if (opts?.chunked) {
+    if (typeof opts.chunkCount === 'number') {
+      effectiveChunkCount = Math.max(1, Math.floor(opts.chunkCount));
+    } else {
+      effectiveChunkCount = computeAutoChunkCount(envelope.length, opts.fragmentSize);
+    }
+  }
+
+  const chunkStream = encodeChunkedEnvelope(
+    envelope,
+    effectiveChunkCount,
+    backend as TransferBackend<Frame>,
+    { maxFragmentLength: opts?.fragmentSize, backendOptions: opts?.backendOptions },
+    opts?.picker,
+  );
+
+  async function* taggedFrames(): AsyncIterable<Frame> {
+    for await (const item of chunkStream) {
+      yield item.taggedFrame;
+    }
+  }
+
   if (opts && isNegotiatedEncodeOptions(opts)) {
-    const backend = await resolvePreferredBackend(opts.preferredBackend);
-    const parts = await encodeFileToParts(
-      bytes,
-      { filename, mimeType },
-      { maxFragmentLength: opts.fragmentSize, backend, backendOptions: opts.backendOptions },
-    );
     const intervalFrames = Math.max(1, opts.headerIntervalFrames ?? DEFAULT_HEADER_INTERVAL_FRAMES);
-    yield* interleaveHeaderFrames(parts, backend.id, intervalFrames);
+    yield* interleaveHeaderFrames(taggedFrames(), backend.id, intervalFrames, effectiveChunkCount);
     return;
   }
 
-  const parts = await encodeFileToParts(
-    bytes,
-    { filename, mimeType },
-    {
-      maxFragmentLength: opts?.fragmentSize,
-      backend: opts?.backend,
-      backendOptions: opts?.backendOptions,
-    },
-  );
-  yield* parts;
+  yield* taggedFrames();
 }
 
 export { DisplayDriver } from './backends/display-driver';
 export type { DisplayDriverOptions } from './backends/display-driver';
+
+export {
+  RoundRobinChunkPicker,
+  WeightedChunkPicker,
+  computeAutoChunkCount,
+  encodeChunkedEnvelope,
+  ChunkedTransferDecoder,
+} from './codec/chunked-transfer';
+export type { ChunkPicker } from './codec/chunked-transfer';
 
 export { qrLtBackend } from './backends/qr-lt';
 export { qrBinLtBackend } from './backends/qr-bin-lt';
@@ -157,14 +198,22 @@ export type { TransferMetrics } from './scan/metrics';
  * treat that as "offer a retry", not "something is broken."
  */
 export class StreamDecoder<F extends Frame = string> {
-  private readonly decoder: TransferDecoder<F>;
+  private readonly decoder: ChunkedTransferDecoder<F>;
 
-  constructor(backend?: TransferBackend<F>) {
-    this.decoder = new TransferDecoder<F>(backend);
+  constructor(backend?: TransferBackend<F>, chunkCount = 1) {
+    this.decoder = new ChunkedTransferDecoder<F>(chunkCount, backend);
   }
 
-  addFrame(data: F): void {
-    this.decoder.receivePart(data);
+  addFrame(data: F): { chunkId: number; newlyCompleted: boolean } {
+    return this.decoder.receiveTaggedFrame(data);
+  }
+
+  get completedChunks(): boolean[] {
+    return this.decoder.completedChunks;
+  }
+
+  get numChunks(): number {
+    return this.decoder.numChunks;
   }
 
   /** bc-ur's estimated completion ratio (0-1) — an estimate, not a guarantee. */
@@ -173,7 +222,7 @@ export class StreamDecoder<F extends Frame = string> {
   }
 
   get isComplete(): boolean {
-    return this.decoder.isComplete();
+    return this.decoder.isComplete;
   }
 
   /**
@@ -197,9 +246,6 @@ export class StreamDecoder<F extends Frame = string> {
    */
   async getResult(): Promise<Blob> {
     const { filename, mimeType, bytes } = await this.decoder.getResult();
-    // TS's DOM lib wants BlobPart's buffer typed as exactly ArrayBuffer, not
-    // the wider ArrayBufferLike our Uint8Array pipeline carries — real bytes
-    // here are always plain ArrayBuffer-backed (never SharedArrayBuffer).
     return new File([bytes as Uint8Array<ArrayBuffer>], filename, { type: mimeType });
   }
 }
@@ -207,6 +253,11 @@ export class StreamDecoder<F extends Frame = string> {
 export interface ReceiverSessionCallbacks {
   /** Called after every frame that advances decode progress. */
   onProgress?: (progress: number) => void;
+  onChunkProgress?: (state: {
+    chunkCount: number;
+    complete: number[];
+    completedChunks: boolean[];
+  }) => void;
   /**
    * Wall-clock throughput, fired alongside every `onProgress`. Separate
    * from `onProgress` on purpose: that one reports the fountain decoder's
@@ -241,9 +292,13 @@ export class ReceiverSession<F extends Frame = string> {
   private unsubscribe: (() => void) | undefined;
   private settled = false;
 
-  constructor(callbacks: ReceiverSessionCallbacks = {}, backend?: TransferBackend<F>) {
+  constructor(
+    callbacks: ReceiverSessionCallbacks = {},
+    backend?: TransferBackend<F>,
+    chunkCount = 1,
+  ) {
     this.callbacks = callbacks;
-    this.decoder = new StreamDecoder<F>(backend);
+    this.decoder = new StreamDecoder<F>(backend, chunkCount);
   }
 
   async start(videoElement?: HTMLVideoElement, opts?: ScannerOptions): Promise<void> {
@@ -273,8 +328,9 @@ export class ReceiverSession<F extends Frame = string> {
   private handleFrame(frame: F): void {
     if (this.settled) return;
 
+    let res: { chunkId: number; newlyCompleted: boolean };
     try {
-      this.decoder.addFrame(frame);
+      res = this.decoder.addFrame(frame);
     } catch {
       // Not a screenferry part — stray QR code in frame, misread, etc.
       // Expected in live camera use; keep listening.
@@ -283,6 +339,17 @@ export class ReceiverSession<F extends Frame = string> {
 
     this.goodputTracker.record();
     this.callbacks.onProgress?.(this.decoder.progress);
+    if (res.newlyCompleted || this.decoder.completedChunks.some(Boolean)) {
+      const completedIndices = this.decoder.completedChunks
+        .map((done, idx) => (done ? idx : -1))
+        .filter((idx) => idx >= 0);
+      this.callbacks.onChunkProgress?.({
+        chunkCount: this.decoder.numChunks,
+        complete: completedIndices,
+        completedChunks: this.decoder.completedChunks,
+      });
+    }
+
     if (this.callbacks.onMetrics) {
       this.callbacks.onMetrics(
         this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes),
@@ -322,6 +389,7 @@ export interface NegotiatingStreamDecoderCallbacks {
 export class NegotiatingStreamDecoder {
   private decoder: StreamDecoder<Frame> | undefined;
   private resolvedBackendId: string | undefined;
+  private resolvedChunkCount = 1;
   private readonly callbacks: NegotiatingStreamDecoderCallbacks;
 
   constructor(callbacks: NegotiatingStreamDecoderCallbacks = {}) {
@@ -331,6 +399,18 @@ export class NegotiatingStreamDecoder {
   /** The backend id announced by the header frame, once resolved — `undefined` until then. */
   get backendId(): string | undefined {
     return this.resolvedBackendId;
+  }
+
+  get chunkCount(): number {
+    return this.resolvedChunkCount;
+  }
+
+  get completedChunks(): boolean[] {
+    return this.decoder?.completedChunks ?? [];
+  }
+
+  get numChunks(): number {
+    return this.decoder?.numChunks ?? 1;
   }
 
   get progress(): number {
@@ -351,24 +431,21 @@ export class NegotiatingStreamDecoder {
     return this.decoder?.bytesReceived ?? 0;
   }
 
-  addFrame(frame: Frame): void {
-    const headerBackendId = decodeHeaderFrame(frame);
-    if (headerBackendId !== undefined) {
-      if (!this.resolvedBackendId) this.resolve(headerBackendId);
-      return; // Header frames are a beacon, not payload -- never handed to a backend decoder.
+  addFrame(frame: Frame): { chunkId: number; newlyCompleted: boolean } | undefined {
+    const headerInfo = parseHeaderFrame(frame);
+    if (headerInfo !== undefined) {
+      if (!this.resolvedBackendId) {
+        this.resolve(headerInfo.backendId, headerInfo.chunkCount ?? 1);
+      }
+      return undefined; // Header frames are a beacon, not payload -- never handed to a backend decoder.
     }
 
     if (!this.resolvedBackendId) {
-      // The header frame itself can be lost like any other frame. A
-      // qrLtBackend data frame (a bc-ur UR part) is indistinguishable from
-      // "haven't seen the header yet" except by trying it — a `Uint8Array`
-      // frame can't be qrLtBackend data, so there's nothing useful to do
-      // with it until a header arrives.
-      if (typeof frame !== 'string') return;
-      this.resolve(qrLtBackend.id);
+      if (typeof frame !== 'string') return undefined;
+      this.resolve(qrLtBackend.id, 1);
     }
 
-    this.decoder?.addFrame(frame);
+    return this.decoder?.addFrame(frame);
   }
 
   async getResult(): Promise<Blob> {
@@ -380,12 +457,13 @@ export class NegotiatingStreamDecoder {
     return this.decoder.getResult();
   }
 
-  private resolve(backendId: string): void {
+  private resolve(backendId: string, chunkCount = 1): void {
     const backend = backendForId(backendId);
     if (!backend) return; // Unrecognized id (a newer sender, noise) -- keep waiting.
 
     this.resolvedBackendId = backendId;
-    this.decoder = new StreamDecoder<Frame>(backend);
+    this.resolvedChunkCount = chunkCount;
+    this.decoder = new StreamDecoder<Frame>(backend, chunkCount);
     this.callbacks.onBackendResolved?.(backendId);
   }
 }
@@ -459,34 +537,48 @@ export class NegotiatingReceiverSession {
   private handleFrame(frame: Frame): void {
     if (this.settled) return;
 
+    let res: { chunkId: number; newlyCompleted: boolean } | undefined;
     try {
-      this.decoder.addFrame(frame);
+      res = this.decoder.addFrame(frame);
     } catch {
       // Not a screenferry part — stray QR code in frame, misread, etc.
       // Expected in live camera use; keep listening.
       return;
     }
 
-    this.goodputTracker.record();
-    this.callbacks.onProgress?.(this.decoder.progress);
-    if (this.callbacks.onMetrics) {
-      this.callbacks.onMetrics(
-        this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes),
-      );
-    }
-
-    if (this.decoder.isComplete) {
-      this.settled = true;
-      this.decoder
-        .getResult()
-        .then((file) => {
-          this.stop();
-          this.callbacks.onComplete?.(file);
-        })
-        .catch((err: unknown) => {
-          this.stop();
-          this.callbacks.onError?.(err);
+    if (res !== undefined) {
+      this.goodputTracker.record();
+      this.callbacks.onProgress?.(this.decoder.progress);
+      if (res.newlyCompleted || this.decoder.completedChunks.some(Boolean)) {
+        const completedIndices = this.decoder.completedChunks
+          .map((done, idx) => (done ? idx : -1))
+          .filter((idx) => idx >= 0);
+        this.callbacks.onChunkProgress?.({
+          chunkCount: this.decoder.numChunks,
+          complete: completedIndices,
+          completedChunks: this.decoder.completedChunks,
         });
+      }
+
+      if (this.callbacks.onMetrics) {
+        this.callbacks.onMetrics(
+          this.metricsTracker.sample(this.decoder.bytesReceived, this.decoder.totalBytes),
+        );
+      }
+
+      if (this.decoder.isComplete) {
+        this.settled = true;
+        this.decoder
+          .getResult()
+          .then((file) => {
+            this.stop();
+            this.callbacks.onComplete?.(file);
+          })
+          .catch((err: unknown) => {
+            this.stop();
+            this.callbacks.onError?.(err);
+          });
+      }
     }
   }
 

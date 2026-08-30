@@ -120,6 +120,31 @@
       /></label>
     </p>
 
+    <p>
+      Advanced features:
+      <label
+        ><input type="checkbox" id="feature-mask-pinning" checked /> Mask pinning (sender)</label
+      >
+      <label><input type="checkbox" id="feature-chunked" /> Chunked fountain code</label>
+      <label
+        >chunkCount:
+        <input type="text" id="tune-chunk-count" value="auto" style="width: 4em" placeholder="auto"
+      /></label>
+      <label><input type="checkbox" id="feature-boost" /> Boost mode (interactive priority)</label>
+    </p>
+
+    <div id="sender-grid-container" style="display: none; margin-bottom: 1rem">
+      <p style="margin: 0 0 0.25rem 0">
+        <small>Sender Boost Grid (tap to mark chunk done/undone):</small>
+      </p>
+      <div id="sender-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
+    </div>
+
+    <div id="receiver-grid-container" style="display: none; margin-bottom: 1rem">
+      <p style="margin: 0 0 0.25rem 0"><small>Receiver Progress Grid:</small></p>
+      <div id="receiver-chunk-grid" style="display: flex; gap: 6px; flex-wrap: wrap"></div>
+    </div>
+
     <section>
       <h2>1. Self-test (no camera needed)</h2>
       <p>
@@ -242,7 +267,12 @@
     </section>
 
     <script type="module">
-      import { encodeToFrames, DisplayDriver, NegotiatingReceiverSession } from '../dist/index.js';
+      import {
+        encodeToFrames,
+        DisplayDriver,
+        NegotiatingReceiverSession,
+        WeightedChunkPicker,
+      } from '../dist/index.js';
 
       function selectedBackend() {
         return document.getElementById('backend').value;
@@ -254,7 +284,119 @@
         const fragmentSize = fragmentRaw ? Number(fragmentRaw) : undefined;
         const scanHz = Number(document.getElementById('tune-scanhz').value) || 20;
         const decodeWorkers = Number(document.getElementById('tune-decode-workers').value) || 1;
-        return { fps, fragmentSize, scanHz, decodeWorkers };
+
+        const maskPinning = document.getElementById('feature-mask-pinning').checked;
+        const chunked = document.getElementById('feature-chunked').checked;
+        const chunkCountRaw = document.getElementById('tune-chunk-count').value.trim();
+        const chunkCount =
+          chunkCountRaw === 'auto' || !chunkCountRaw ? 'auto' : Number(chunkCountRaw) || 'auto';
+        const boost = document.getElementById('feature-boost').checked;
+
+        return {
+          fps,
+          fragmentSize,
+          scanHz,
+          decodeWorkers,
+          maskPinning,
+          chunked,
+          chunkCount,
+          boost,
+        };
+      }
+
+      // Persist UI settings
+      const settingsKeys = [
+        'tune-fps',
+        'tune-fragment',
+        'tune-scanhz',
+        'tune-decode-workers',
+        'feature-mask-pinning',
+        'feature-chunked',
+        'tune-chunk-count',
+        'feature-boost',
+        'backend',
+      ];
+      settingsKeys.forEach((key) => {
+        const el = document.getElementById(key);
+        if (!el) return;
+        const saved = localStorage.getItem('sf_setting_' + key);
+        if (saved !== null) {
+          if (el.type === 'checkbox') el.checked = saved === 'true';
+          else el.value = saved;
+        }
+        el.addEventListener('change', () => {
+          const val = el.type === 'checkbox' ? el.checked : el.value;
+          localStorage.setItem('sf_setting_' + key, String(val));
+          updateGridVisibility();
+        });
+      });
+
+      function updateGridVisibility() {
+        const chunked = document.getElementById('feature-chunked').checked;
+        const boost = document.getElementById('feature-boost').checked;
+        document.getElementById('sender-grid-container').style.display =
+          chunked && boost ? 'block' : 'none';
+        document.getElementById('receiver-grid-container').style.display = chunked
+          ? 'block'
+          : 'none';
+      }
+      updateGridVisibility();
+
+      function renderReceiverGrid(state) {
+        const container = document.getElementById('receiver-chunk-grid');
+        if (!container) return;
+        container.innerHTML = '';
+        const count = state.chunkCount || 1;
+        const completeSet = new Set(state.complete || []);
+        for (let i = 0; i < count; i++) {
+          const box = document.createElement('div');
+          box.style.width = '24px';
+          box.style.height = '24px';
+          box.style.lineHeight = '24px';
+          box.style.textAlign = 'center';
+          box.style.fontSize = '12px';
+          box.style.borderRadius = '4px';
+          box.style.color = '#fff';
+          box.style.fontWeight = 'bold';
+          box.style.backgroundColor = completeSet.has(i) ? '#2e7d32' : '#757575';
+          box.textContent = String(i);
+          container.appendChild(box);
+        }
+      }
+
+      function setupSenderGrid(chunkCount, onToggle) {
+        const container = document.getElementById('sender-chunk-grid');
+        if (!container) return;
+        container.innerHTML = '';
+        const markedDone = new Set();
+        const count = typeof chunkCount === 'number' ? chunkCount : 4; // fallback UI count if auto
+        for (let i = 0; i < count; i++) {
+          const box = document.createElement('div');
+          box.style.width = '28px';
+          box.style.height = '28px';
+          box.style.lineHeight = '28px';
+          box.style.textAlign = 'center';
+          box.style.fontSize = '12px';
+          box.style.borderRadius = '4px';
+          box.style.cursor = 'pointer';
+          box.style.userSelect = 'none';
+          box.style.color = '#fff';
+          box.style.fontWeight = 'bold';
+          box.style.backgroundColor = '#757575';
+          box.textContent = String(i);
+
+          box.addEventListener('click', () => {
+            if (markedDone.has(i)) {
+              markedDone.delete(i);
+              box.style.backgroundColor = '#757575';
+            } else {
+              markedDone.add(i);
+              box.style.backgroundColor = '#1565c0'; // blue for user-marked done
+            }
+            onToggle(markedDone);
+          });
+          container.appendChild(box);
+        }
       }
 
       // Renders `onMetrics` as a one-line "X KB/s — N.N KB of M.M KB —
@@ -342,9 +484,37 @@
           navigator.mediaDevices.getUserMedia = async () => cameraCanvas.captureStream(15);
           startMirroring();
 
-          const { fps, fragmentSize, scanHz, decodeWorkers } = tuning();
-          const senderFrames = encodeToFrames(file, { preferredBackend: backend, fragmentSize });
-          const senderDriver = new DisplayDriver(senderFrames, senderCanvas, { fps });
+          const {
+            fps,
+            fragmentSize,
+            scanHz,
+            decodeWorkers,
+            maskPinning,
+            chunked,
+            chunkCount,
+            boost,
+          } = tuning();
+
+          let picker;
+          if (chunked && boost) {
+            picker = new WeightedChunkPicker(typeof chunkCount === 'number' ? chunkCount : 4);
+            setupSenderGrid(chunkCount, (doneSet) => {
+              picker.setPriority(doneSet, 0.1);
+            });
+          }
+
+          const senderFrames = encodeToFrames(file, {
+            preferredBackend: backend,
+            fragmentSize,
+            chunked,
+            chunkCount,
+            picker,
+          });
+
+          const senderDriver = new DisplayDriver(senderFrames, senderCanvas, {
+            fps,
+            maskPattern: maskPinning ? 0 : -1,
+          });
           senderDriver.start();
 
           function cleanup() {
@@ -361,6 +531,9 @@
               progress.value = p;
               const goodput = session.goodput;
               status.textContent = `receiving "${file.name}"... ${(p * 100).toFixed(0)}%${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
+            },
+            onChunkProgress: (state) => {
+              renderReceiverGrid(state);
             },
             onMetrics: (m) => {
               lastMetrics = m;
@@ -405,11 +578,27 @@
           const backend = selectedBackend();
           const file =
             document.getElementById('live-send-file').files?.[0] ?? defaultSampleFile(backend);
-          const { fps, fragmentSize } = tuning();
-          const frames = encodeToFrames(file, { preferredBackend: backend, fragmentSize });
+          const { fps, fragmentSize, maskPinning, chunked, chunkCount, boost } = tuning();
+
+          let picker;
+          if (chunked && boost) {
+            picker = new WeightedChunkPicker(typeof chunkCount === 'number' ? chunkCount : 4);
+            setupSenderGrid(chunkCount, (doneSet) => {
+              picker.setPriority(doneSet, 0.1);
+            });
+          }
+
+          const frames = encodeToFrames(file, {
+            preferredBackend: backend,
+            fragmentSize,
+            chunked,
+            chunkCount,
+            picker,
+          });
 
           driver = new DisplayDriver(frames, canvas, {
             fps,
+            maskPattern: maskPinning ? 0 : -1,
             onFrameSent: (index) => {
               status.textContent = `sending "${file.name}" via ${backend} — frame ${index + 1}`;
             },
@@ -470,6 +659,9 @@
               progress.value = p;
               const goodput = session.goodput;
               status.textContent = `receiving... ${(p * 100).toFixed(0)}% (estimate)${goodput > 0 ? ` — ${goodput.toFixed(1)} frames/sec` : ''}`;
+            },
+            onChunkProgress: (state) => {
+              renderReceiverGrid(state);
             },
             onMetrics: (m) => {
               lastMetrics = m;

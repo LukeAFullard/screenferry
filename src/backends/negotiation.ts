@@ -36,8 +36,16 @@ const NEGOTIABLE_BACKENDS: Record<NegotiableBackendId, TransferBackend<Frame>> =
 const HEADER_PREFIX = 'sf1:backend=';
 
 /** Builds the plain-QR header/beacon frame announcing which backend the data frames use. */
-export function encodeHeaderFrame(backendId: string): string {
+export function encodeHeaderFrame(backendId: string, options?: { chunkCount?: number }): string {
+  if (options?.chunkCount && options.chunkCount > 1) {
+    return `${HEADER_PREFIX}${backendId};chunks=${options.chunkCount}`;
+  }
   return `${HEADER_PREFIX}${backendId}`;
+}
+
+export interface HeaderFrameInfo {
+  backendId: string;
+  chunkCount?: number;
 }
 
 /**
@@ -60,11 +68,30 @@ export function encodeHeaderFrame(backendId: string): string {
  * Safe as long as backend ids themselves are lowercase (all of them are).
  */
 export function decodeHeaderFrame(frame: Frame): string | undefined {
+  const parsed = parseHeaderFrame(frame);
+  return parsed?.backendId;
+}
+
+export function parseHeaderFrame(frame: Frame): HeaderFrameInfo | undefined {
   const text = typeof frame === 'string' ? frame : new TextDecoder().decode(frame);
 
   const lower = text.toLowerCase();
   if (!lower.startsWith(HEADER_PREFIX)) return undefined;
-  return lower.slice(HEADER_PREFIX.length);
+  const body = lower.slice(HEADER_PREFIX.length);
+  const parts = body.split(';');
+  const backendId = parts[0];
+  let chunkCount: number | undefined;
+
+  for (let i = 1; i < parts.length; i++) {
+    if (parts[i].startsWith('chunks=')) {
+      const count = parseInt(parts[i].slice('chunks='.length), 10);
+      if (!isNaN(count) && count > 0) {
+        chunkCount = count;
+      }
+    }
+  }
+
+  return { backendId, chunkCount };
 }
 
 /** Looks up a negotiable backend by the id a header frame announced. `undefined` for an id this build doesn't recognize (a newer sender, a removed backend, a typo, noise). */
