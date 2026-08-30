@@ -150,6 +150,15 @@ export async function* encodeChunkedEnvelope<F extends Frame = Frame>(
   }
 }
 
+/**
+ * Receives and reassembles multi-chunk fountain transfers.
+ *
+ * Note: Fountain peeling decode (`receiveTaggedFrame` / `addFrame`) executes
+ * serially on the main thread for each chunk rather than in parallel across
+ * workers. Multi-chunk transfer still improves performance by reducing total
+ * peeling computation complexity (O(K log(K/N)) vs O(K log K)) and bounding
+ * per-chunk memory overhead during high-symbol transfers.
+ */
 export class ChunkedTransferDecoder<F extends Frame = Frame> {
   private readonly decoders: BackendDecoder<F>[];
   private readonly chunkCount: number;
