@@ -9,10 +9,7 @@ import {
 } from '../../src/index';
 import { computeAutoChunkCount } from '../../src/codec/chunked-transfer';
 import { tagFrameWithChunk, untagFrameWithChunk } from '../../src/codec/frame-tag';
-import {
-  computeQrModules,
-  DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED,
-} from '../../src/backends/qr-lt';
+import { computeQrModules, DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED } from '../../src/backends/qr-lt';
 import { DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED as DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED_BIN } from '../../src/backends/qr-bin-lt';
 import { bytesEqual, pseudoRandomBytes } from '../helpers/bytes';
 
@@ -161,33 +158,29 @@ describe('Chunked Fountain Codec Core & Tagging', () => {
     expect(bytesEqual(await blobBytes(resultBlob), bytes)).toBe(true);
   });
 
-  it(
-    'worst-case tagged frames fit QR version 40 capacity for both backends',
-    () => {
-      // 1. qr-lt backend: worst-case UR part tagged with c254:
-      const msgLt = Buffer.alloc(DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED * 50_000, 0xaa);
-      const ur = UR.fromBuffer(msgLt);
-      const encoderLt = new UREncoder(ur, DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED, 999_999 - 1);
-      const rawPartLt = encoderLt.nextPart();
-      const taggedLt = tagFrameWithChunk(rawPartLt, 254);
+  it('worst-case tagged frames fit QR version 40 capacity for both backends', () => {
+    // 1. qr-lt backend: worst-case UR part tagged with c254:
+    const msgLt = Buffer.alloc(DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED * 50_000, 0xaa);
+    const ur = UR.fromBuffer(msgLt);
+    const encoderLt = new UREncoder(ur, DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED, 999_999 - 1);
+    const rawPartLt = encoderLt.nextPart();
+    const taggedLt = tagFrameWithChunk(rawPartLt, 254);
 
-      expect(() => computeQrModules(taggedLt)).not.toThrow();
+    expect(() => computeQrModules(taggedLt)).not.toThrow();
 
-      // 2. qr-bin-lt backend: worst-case CBOR part tagged with 1-byte header (chunkId 254)
-      const FountainEncoderClass =
-        (FountainEncoderImport as unknown as { default?: typeof FountainEncoderImport }).default ??
-        FountainEncoderImport;
-      const msgBin = Buffer.alloc(DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED_BIN * 50_000, 0xaa);
-      const encoderBin = new FountainEncoderClass(
-        msgBin,
-        DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED_BIN,
-        999_999 - 1,
-      );
-      const rawPartBin = new Uint8Array(encoderBin.nextPart().cbor());
-      const taggedBin = tagFrameWithChunk(rawPartBin, 254);
+    // 2. qr-bin-lt backend: worst-case CBOR part tagged with 1-byte header (chunkId 254)
+    const FountainEncoderClass =
+      (FountainEncoderImport as unknown as { default?: typeof FountainEncoderImport }).default ??
+      FountainEncoderImport;
+    const msgBin = Buffer.alloc(DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED_BIN * 50_000, 0xaa);
+    const encoderBin = new FountainEncoderClass(
+      msgBin,
+      DEFAULT_MAX_FRAGMENT_LENGTH_CHUNKED_BIN,
+      999_999 - 1,
+    );
+    const rawPartBin = new Uint8Array(encoderBin.nextPart().cbor());
+    const taggedBin = tagFrameWithChunk(rawPartBin, 254);
 
-      expect(() => computeQrModules(taggedBin)).not.toThrow();
-    },
-    15_000,
-  );
+    expect(() => computeQrModules(taggedBin)).not.toThrow();
+  }, 15_000);
 });
