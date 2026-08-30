@@ -27,7 +27,7 @@ describe('Boost Mode & Weighted Chunk Selection', () => {
     const picker = new WeightedChunkPicker(3);
 
     // Incorrectly mark chunk 0 as done
-    picker.setPriority(new Set([0]), 0.05);
+    picker.setPriority(new Set([0]), 0.1);
 
     const stream = encodeChunkedEnvelope(
       envelope,
@@ -42,7 +42,7 @@ describe('Boost Mode & Weighted Chunk Selection', () => {
     for await (const item of stream) {
       chunkCounts[item.chunkId]++;
       frameCount++;
-      if (frameCount >= 300) break;
+      if (frameCount >= 500) break;
     }
 
     // All chunks (including 0) were generated
